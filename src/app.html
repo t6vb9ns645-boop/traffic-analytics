@@ -357,6 +357,10 @@ input[type=range]{width:100%;accent-color:var(--accent);}
   border:1px solid var(--line);padding:14px;
 }
 .review-current img{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;background:#000;min-height:0;}
+.review-image-wrap{position:relative;min-height:0;min-width:0;max-width:100%;max-height:100%;display:flex;align-items:center;justify-content:center;flex:1;}
+.review-image-wrap img{display:block;}
+.review-image-wrap canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;display:none;}
+.review-image-wrap canvas.active{display:block;}
 .review-controls{display:flex;flex-direction:column;gap:10px;}
 .review-controls select{width:100%;}
 .category-group h3{
@@ -949,8 +953,15 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       <div id="reviewUpcomingList"></div>
     </div>
     <div class="review-current">
-      <img id="reviewCurrentImg" alt="Aktuelles Bild (beste verfügbare Auflösung)">
+      <div class="review-image-wrap" id="reviewImageWrap">
+        <img id="reviewCurrentImg" alt="Aktuelles Bild (beste verfügbare Auflösung)">
+        <canvas id="reviewMarkCanvas"></canvas>
+      </div>
       <div class="diag-msg" id="reviewCurrentMeta"></div>
+      <div class="row">
+        <button id="btnReviewMarkMode" style="flex:1;">✏️ Objekt genauer markieren</button>
+        <button id="btnReviewMarkReset" class="ghost" disabled>↺ Markierung zurücksetzen</button>
+      </div>
     </div>
     <div class="review-controls">
       <div class="step-section">
@@ -1194,6 +1205,11 @@ const reviewProgress       = document.getElementById('reviewProgress');
 const reviewUpcomingList   = document.getElementById('reviewUpcomingList');
 const reviewCurrentImg     = document.getElementById('reviewCurrentImg');
 const reviewCurrentMeta    = document.getElementById('reviewCurrentMeta');
+const reviewImageWrap      = document.getElementById('reviewImageWrap');
+const reviewMarkCanvas     = document.getElementById('reviewMarkCanvas');
+const rmCtx                = reviewMarkCanvas.getContext('2d');
+const btnReviewMarkMode    = document.getElementById('btnReviewMarkMode');
+const btnReviewMarkReset   = document.getElementById('btnReviewMarkReset');
 const reviewClassSelect    = document.getElementById('reviewClassSelect');
 const btnReviewAccept      = document.getElementById('btnReviewAccept');
 const btnReviewFalsePositive = document.getElementById('btnReviewFalsePositive');
@@ -2485,7 +2501,7 @@ function saveLearningState(){
       useLearnedProfile,
       trainingExamples: trainingExamples.map(({id,label,feat,capturedAt,trackId})=>({id,label,feat,capturedAt,trackId})),
       autoLearnPool,
-      pendingAutoSamples: pendingAutoSamples.map(({id,label,feat,capturedAt,source,trackId})=>({id,label,feat,capturedAt,source,trackId})),
+      pendingAutoSamples: pendingAutoSamples.map(({id,label,feat,capturedAt,source,trackId,manuallyMarked})=>({id,label,feat,capturedAt,source,trackId,manuallyMarked})),
       autoLearnRounds,
       exampleNextId,
       pendingCap: PENDING_CAP
@@ -2636,12 +2652,15 @@ function handleManualCaptureClick(native){
     preview=capturePreview(track);
     trackId=track.id;
     if(immediateLabel){ track.manualCls=immediateLabel; track.cls=immediateLabel; }
+    const crop=estimateCropPixelSize(track);
+    if(crop){ feat.cropNativeW=Math.round(crop.cw); feat.cropNativeH=Math.round(crop.ch); }
   } else {
     // No tracked object at the click — fall back to a fixed-size crop
     // ("geeignet großer Bildausschnitt", matching the minimum auto-capture
     // size) so an arbitrary point can still be captured.
     feat=computeFeaturesAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
     preview=cropPreviewAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
+    feat.cropNativeW=MIN_CAPTURE_CROP_W; feat.cropNativeH=MIN_CAPTURE_CROP_H;
   }
   const ex={
     id:exampleNextId++, label:immediateLabel||'Sonstiges', feat, capturedAt:new Date().toISOString(),
@@ -2746,6 +2765,10 @@ function capturePreview(t){
 
 function captureExample(t){
   const feat=computeFeatures(t);
+  // Needed by the Sichtprüfung "mark more precisely" tool to translate a
+  // hand-drawn box on the (downscaled) preview back into real measurements.
+  const crop=estimateCropPixelSize(t);
+  if(crop){ feat.cropNativeW=Math.round(crop.cw); feat.cropNativeH=Math.round(crop.ch); }
   const ex={
     id:exampleNextId++, label:t.cls, feat, capturedAt:new Date().toISOString(), trackId:t.id,
     _preview:capturePreview(t) // session-only, stripped before export
@@ -2961,7 +2984,8 @@ function collectAutoLearnSample(t){
   if(CLASS_WIDTH_BOUNDARY_M.some(b=>Math.abs(wm-b)<CLASS_BOUNDARY_MARGIN_M)) return; // too ambiguous, skip
   const label=staticClassifyByWidth(t.h>t.w*1.5, wm);
   const ex={
-    id:exampleNextId++, label, feat:{widthM:+wm.toFixed(2), areaPx:Math.round(t.area||0)},
+    id:exampleNextId++, label,
+    feat:{widthM:+wm.toFixed(2), areaPx:Math.round(t.area||0), cropNativeW:Math.round(crop.cw), cropNativeH:Math.round(crop.ch)},
     capturedAt:new Date().toISOString(), _preview:capturePreview(t)
   };
   pendingAutoSamples.push(ex);
@@ -3052,12 +3076,15 @@ function renderReviewCurrent(){
   if(!pendingAutoSamples.length){ closeReviewModal(); return; }
   if(reviewIndex>=pendingAutoSamples.length) reviewIndex=pendingAutoSamples.length-1;
   const item=pendingAutoSamples[reviewIndex];
+  exitReviewMarkMode(); // switching items always leaves any in-progress marking behind
   reviewCurrentImg.src=item._preview||'';
   const dimsText=formatFeatDimensions(item.feat);
   reviewCurrentMeta.textContent=[
     item.capturedAt ? `Erfasst: ${new Date(item.capturedAt).toLocaleString()}` : '',
-    dimsText
+    dimsText,
+    item.manuallyMarked ? '✏️ manuell nachmarkiert' : ''
   ].filter(Boolean).join(' · ');
+  btnReviewMarkReset.disabled=!item._origFeat;
   reviewClassSelect.innerHTML='';
   CLASS_OPTIONS.forEach(c=>{
     const o=document.createElement('option'); o.value=c; o.textContent=c;
@@ -3083,6 +3110,106 @@ function renderReviewUpcoming(){
     reviewUpcomingList.appendChild(img);
   });
 }
+
+/* ══════════════════════════════════════════
+   Mark more precisely: the automatic detector's bounding box can be
+   imprecise (merged blobs, partial occlusion, ...) — this lets a person
+   redraw the object's real extent directly on the captured preview during
+   Sichtprüfung, correcting wPx/hPx/aspect (and widthM, proportionally,
+   when calibrated) before the example is approved into the learned
+   profile, instead of only being able to accept or reject the whole thing.
+══════════════════════════════════════════ */
+let reviewMarkActive=false, reviewMarkDrawing=false, reviewMarkStartPt=null;
+function positionReviewMarkCanvas(){
+  const imgRect=reviewCurrentImg.getBoundingClientRect();
+  const wrapRect=reviewImageWrap.getBoundingClientRect();
+  reviewMarkCanvas.style.left=(imgRect.left-wrapRect.left)+'px';
+  reviewMarkCanvas.style.top=(imgRect.top-wrapRect.top)+'px';
+  reviewMarkCanvas.style.width=imgRect.width+'px';
+  reviewMarkCanvas.style.height=imgRect.height+'px';
+  reviewMarkCanvas.width=Math.max(1,Math.round(imgRect.width));
+  reviewMarkCanvas.height=Math.max(1,Math.round(imgRect.height));
+}
+function exitReviewMarkMode(){
+  reviewMarkActive=false; reviewMarkDrawing=false; reviewMarkStartPt=null;
+  reviewMarkCanvas.classList.remove('active');
+  btnReviewMarkMode.textContent='✏️ Objekt genauer markieren';
+  btnReviewMarkMode.classList.remove('primary');
+  if(reviewMarkCanvas.width) rmCtx.clearRect(0,0,reviewMarkCanvas.width,reviewMarkCanvas.height);
+}
+btnReviewMarkMode.addEventListener('click', () => {
+  reviewMarkActive=!reviewMarkActive;
+  if(reviewMarkActive){
+    positionReviewMarkCanvas();
+    reviewMarkCanvas.classList.add('active');
+    btnReviewMarkMode.textContent='✏️ Ziehen zum Markieren …';
+    btnReviewMarkMode.classList.add('primary');
+  } else {
+    exitReviewMarkMode();
+  }
+});
+reviewMarkCanvas.addEventListener('mousedown', ev => {
+  if(!reviewMarkActive) return;
+  const rect=reviewMarkCanvas.getBoundingClientRect();
+  reviewMarkStartPt={x:ev.clientX-rect.left, y:ev.clientY-rect.top};
+  reviewMarkDrawing=true;
+});
+reviewMarkCanvas.addEventListener('mousemove', ev => {
+  if(!reviewMarkDrawing) return;
+  const rect=reviewMarkCanvas.getBoundingClientRect();
+  const cur={x:ev.clientX-rect.left, y:ev.clientY-rect.top};
+  rmCtx.clearRect(0,0,reviewMarkCanvas.width,reviewMarkCanvas.height);
+  rmCtx.strokeStyle='#28e0c5'; rmCtx.lineWidth=2; rmCtx.setLineDash([5,3]);
+  rmCtx.strokeRect(
+    Math.min(reviewMarkStartPt.x,cur.x), Math.min(reviewMarkStartPt.y,cur.y),
+    Math.abs(cur.x-reviewMarkStartPt.x), Math.abs(cur.y-reviewMarkStartPt.y)
+  );
+});
+reviewMarkCanvas.addEventListener('mouseup', ev => {
+  if(!reviewMarkDrawing) return;
+  reviewMarkDrawing=false;
+  const rect=reviewMarkCanvas.getBoundingClientRect();
+  const cur={x:ev.clientX-rect.left, y:ev.clientY-rect.top};
+  const wCss=Math.abs(cur.x-reviewMarkStartPt.x), hCss=Math.abs(cur.y-reviewMarkStartPt.y);
+  reviewMarkStartPt=null;
+  if(wCss<6 || hCss<6) return; // too small to be a deliberate mark — ignore accidental clicks
+  applyReviewMark(wCss, hCss);
+});
+function applyReviewMark(wCss, hCss){
+  const item=pendingAutoSamples[reviewIndex];
+  if(!item) return;
+  if(!item._origFeat) item._origFeat=JSON.parse(JSON.stringify(item.feat||{}));
+  const natW=reviewCurrentImg.naturalWidth||reviewMarkCanvas.width;
+  const natH=reviewCurrentImg.naturalHeight||reviewMarkCanvas.height;
+  // canvas CSS size === displayed image size, so this first ratio maps a
+  // drawn CSS-pixel box onto the underlying preview thumbnail's own native
+  // pixel resolution; the second ratio (thumbnail px -> real native video
+  // px) uses cropNativeW/H, the actual native size of the region the
+  // thumbnail was downscaled from at capture time.
+  const thumbW=wCss*(natW/reviewMarkCanvas.width), thumbH=hCss*(natH/reviewMarkCanvas.height);
+  const cropNativeW=item.feat?.cropNativeW||natW, cropNativeH=item.feat?.cropNativeH||natH;
+  const newWpx=Math.round(thumbW*(cropNativeW/natW)), newHpx=Math.round(thumbH*(cropNativeH/natH));
+  const oldWpx=item.feat?.wPx, oldWidthM=item.feat?.widthM;
+  const aspect=+((newHpx>=newWpx?newHpx/newWpx:newWpx/newHpx).toFixed(2));
+  const newFeat={ ...item.feat, wPx:newWpx, hPx:newHpx, aspect, areaPx:newWpx*newHpx };
+  // The meters-per-native-pixel scale at that image location is still
+  // valid — only the object's own pixel extent was possibly mismeasured —
+  // so the real-world width estimate is corrected proportionally rather
+  // than discarded.
+  if(oldWidthM!=null && oldWpx>0) newFeat.widthM=+(oldWidthM*(newWpx/oldWpx)).toFixed(2);
+  item.feat=newFeat;
+  item.manuallyMarked=true;
+  exitReviewMarkMode();
+  renderReviewCurrent();
+  saveLearningState();
+}
+btnReviewMarkReset.addEventListener('click', () => {
+  const item=pendingAutoSamples[reviewIndex];
+  if(!item || !item._origFeat) return;
+  item.feat=item._origFeat; item._origFeat=null; item.manuallyMarked=false;
+  renderReviewCurrent();
+  saveLearningState();
+});
 btnStartReview.addEventListener('click', () => openReviewModal(null));
 btnReviewBack.addEventListener('click', closeReviewModal);
 btnReviewAccept.addEventListener('click', () => {
