@@ -847,6 +847,8 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
           <option value="">Später klassifizieren (Sichtprüfung)</option>
         </select>
         <div class="diag-msg" id="manualCaptureStatus">Aktivieren, dann an beliebiger Stelle im Video klicken — erfasst einen Bildausschnitt als Beispiel (zur Sichtprüfung, auch über der Warteschlangen-Grenze). Trifft der Klick ein bereits erkanntes Objekt, wird es weiter verfolgt. Optional oben direkt klassifizieren, statt erst später in der Sichtprüfung.</div>
+        <button id="btnDeselectMode" style="width:100%;">❌ Objekt abwählen: Aus</button>
+        <div class="diag-msg" id="deselectStatus">Aktivieren, dann auf ein fälschlich erkanntes Objekt klicken — wird sofort als Störung gewertet und fließt weiterhin in die Ermittlung ein, statt einfach verworfen zu werden.</div>
       </div>
     </div>
 
@@ -956,6 +958,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
         <select id="reviewClassSelect"></select>
       </div>
       <button id="btnReviewAccept" class="primary" style="width:100%;">✓ Annehmen</button>
+      <button id="btnReviewFalsePositive" style="width:100%;">❌ Kein Objekt (falsch erkannt)</button>
       <button id="btnReviewReject" class="ghost" style="width:100%;">✕ Ablehnen</button>
     </div>
   </div>
@@ -1148,6 +1151,8 @@ const roiStatus    = document.getElementById('roiStatus');
 const btnCaptureMode    = document.getElementById('btnCaptureMode');
 const btnManualCaptureMode  = document.getElementById('btnManualCaptureMode');
 const manualCaptureClassSelect = document.getElementById('manualCaptureClassSelect');
+const btnDeselectMode      = document.getElementById('btnDeselectMode');
+const deselectStatus       = document.getElementById('deselectStatus');
 const manualCaptureStatus   = document.getElementById('manualCaptureStatus');
 const btnCalibAdjustMode    = document.getElementById('btnCalibAdjustMode');
 const calibAdjustList       = document.getElementById('calibAdjustList');
@@ -1191,6 +1196,7 @@ const reviewCurrentImg     = document.getElementById('reviewCurrentImg');
 const reviewCurrentMeta    = document.getElementById('reviewCurrentMeta');
 const reviewClassSelect    = document.getElementById('reviewClassSelect');
 const btnReviewAccept      = document.getElementById('btnReviewAccept');
+const btnReviewFalsePositive = document.getElementById('btnReviewFalsePositive');
 const btnReviewReject      = document.getElementById('btnReviewReject');
 const btnLearnFromExamples = document.getElementById('btnLearnFromExamples');
 const btnResetLearning     = document.getElementById('btnResetLearning');
@@ -2257,17 +2263,22 @@ function calibAdjustLabels(){
 // a capture mode left on from earlier (the click dispatcher already gives
 // calibAdjustArmed top priority as a second line of defense, but turning
 // the others off here avoids any ambiguity about which mode is "live").
-function disableOtherOverlayModes(){
-  if(captureMode){
+function disableOtherOverlayModes(except){
+  if(captureMode && except!=='capture'){
     captureMode=false;
     btnCaptureMode.textContent='🏷 Beispiel-Modus: Aus';
     btnCaptureMode.classList.remove('primary');
     document.body.classList.remove('capture-active');
   }
-  if(manualCaptureMode){
+  if(manualCaptureMode && except!=='manual'){
     manualCaptureMode=false;
     btnManualCaptureMode.textContent='📍 Manuell erfassen: Aus';
     btnManualCaptureMode.classList.remove('primary');
+  }
+  if(deselectMode && except!=='deselect'){
+    deselectMode=false;
+    btnDeselectMode.textContent='❌ Objekt abwählen: Aus';
+    btnDeselectMode.classList.remove('primary');
   }
 }
 btnCalibAdjustMode.addEventListener('click', () => {
@@ -2520,6 +2531,7 @@ btnCloseExamplesPage.addEventListener('click', () => examplesPage.classList.remo
 
 btnCaptureMode.addEventListener('click', () => {
   captureMode=!captureMode;
+  if(captureMode) disableOtherOverlayModes('capture');
   btnCaptureMode.textContent = captureMode ? '🏷 Beispiel-Modus: An' : '🏷 Beispiel-Modus: Aus';
   btnCaptureMode.classList.toggle('primary', captureMode);
   document.body.classList.toggle('capture-active', captureMode);
@@ -2558,6 +2570,7 @@ function handleCaptureClick(native){
 let manualCaptureMode=false;
 btnManualCaptureMode.addEventListener('click', () => {
   manualCaptureMode=!manualCaptureMode;
+  if(manualCaptureMode) disableOtherOverlayModes('manual');
   btnManualCaptureMode.textContent = manualCaptureMode ? '📍 Manuell erfassen: An' : '📍 Manuell erfassen: Aus';
   btnManualCaptureMode.classList.toggle('primary', manualCaptureMode);
   overlay.style.pointerEvents = manualCaptureMode ? 'auto' : 'none';
@@ -2640,6 +2653,41 @@ function handleManualCaptureClick(native){
   manualCaptureStatus.textContent = track
     ? `Manuell erfasst (#${ex.id}) — verknüpft mit verfolgtem Objekt #${track.id}${immediateLabel?`, klassifiziert als "${immediateLabel}"`:', noch unklassifiziert'}.`
     : `Manuell erfasst (#${ex.id})${immediateLabel?`, klassifiziert als "${immediateLabel}"`:', noch unklassifiziert'} — zur Sichtprüfung hinzugefügt.`;
+}
+
+/* ══════════════════════════════════════════
+   Deselect: mark a live tracked object (whether it was captured manually
+   or picked up automatically) as wrongly interpreted right away, instead
+   of only being able to reject it later in the Sichtprüfung. Unlike a
+   plain rejection, this still counts — it's approved directly as a
+   Störung example, so a misinterpreted object continues to influence the
+   object determination rather than just being discarded.
+══════════════════════════════════════════ */
+let deselectMode=false;
+btnDeselectMode.addEventListener('click', () => {
+  deselectMode=!deselectMode;
+  if(deselectMode) disableOtherOverlayModes('deselect');
+  btnDeselectMode.textContent = deselectMode ? '❌ Objekt abwählen: An' : '❌ Objekt abwählen: Aus';
+  btnDeselectMode.classList.toggle('primary', deselectMode);
+  overlay.style.pointerEvents = deselectMode ? 'auto' : 'none';
+  deselectStatus.textContent = deselectMode
+    ? 'Aktiv: Klicke auf ein fälschlich erkanntes Objekt.'
+    : 'Aktivieren, dann auf ein fälschlich erkanntes Objekt klicken — wird sofort als Störung gewertet und fließt weiterhin in die Ermittlung ein, statt einfach verworfen zu werden.';
+});
+function handleDeselectClick(native){
+  const track=nearestTrackToNativePoint(native);
+  if(!track){ deselectStatus.textContent='Kein Objekt in der Nähe des Klicks gefunden.'; return; }
+  track.manualCls='Störung'; track.cls='Störung'; track.isArtifact=true;
+  autoLearnPool.push({label:'Störung', feat:computeFeatures(track)});
+  if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
+  // Also pull it out of the pending queue if it was already sitting there
+  // waiting on a decision — it's just been made, no need to review it twice.
+  pendingAutoSamples=pendingAutoSamples.filter(e=>e.trackId!==track.id);
+  if(pendingAutoSamples.length<=PENDING_RESUME_AT) pendingCapturePaused=false;
+  renderPendingList();
+  renderExampleList();
+  recomputeLearnedProfile();
+  deselectStatus.textContent=`Objekt #${track.id} als Störung gewertet — fließt in die Ermittlung ein.`;
 }
 
 // Derive a small numeric feature profile from the track — this, not a
@@ -2930,6 +2978,7 @@ function renderPendingList(){
       actions:[
         {label:'🔍 Prüfen', onClick:() => openReviewModal(ex.id)},
         {label:'✓ Genehmigen', cls:'primary', onClick:() => approvePendingSample(ex.id)},
+        {label:'❌ Kein Objekt', onClick:() => markPendingAsFalsePositive(ex.id)},
         {label:'✕ Ablehnen', onClick:() => rejectPendingSample(ex.id)}
       ]
     });
@@ -2960,6 +3009,16 @@ function rejectPendingSample(id){
   if(pendingAutoSamples.length<=PENDING_RESUME_AT) pendingCapturePaused=false;
   renderPendingList();
   saveLearningState();
+}
+// "Deselecting" a wrongly-interpreted capture — unlike Ablehnen (which just
+// discards it with no effect), this relabels it as Störung and still
+// approves it into the counted pool, so a misinterpreted object continues
+// to influence the object determination instead of being thrown away.
+function markPendingAsFalsePositive(id){
+  const ex=pendingAutoSamples.find(e=>e.id===id);
+  if(!ex) return;
+  ex.label='Störung';
+  approvePendingSample(id);
 }
 btnRejectAllPending.addEventListener('click', () => {
   if(!pendingAutoSamples.length) return;
@@ -3031,6 +3090,12 @@ btnReviewAccept.addEventListener('click', () => {
   if(!item) return;
   item.label=reviewClassSelect.value; // apply the (possibly corrected) classification
   approvePendingSample(item.id);
+  renderReviewCurrent();
+});
+btnReviewFalsePositive.addEventListener('click', () => {
+  const item=pendingAutoSamples[reviewIndex];
+  if(!item) return;
+  markPendingAsFalsePositive(item.id);
   renderReviewCurrent();
 });
 btnReviewReject.addEventListener('click', () => {
@@ -3326,6 +3391,7 @@ overlay.addEventListener('click', ev => {
   if(calibrationMode){ handleCalibClick(native); return; }
   if(captureMode){ handleCaptureClick(native); return; }
   if(manualCaptureMode){ handleManualCaptureClick(native); return; }
+  if(deselectMode){ handleDeselectClick(native); return; }
 });
 
 /* ══════════════════════════════════════════
