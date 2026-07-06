@@ -278,7 +278,46 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 }
 .training-drawer.open{transform:translateX(0);}
 .training-drawer.drawer-wide{width:560px;}
+
+/* Trainingsdaten-Unterseite: full-page takeover, not a narrow drawer, so
+   editing cards get real room instead of being crammed into ~300px. */
+.examples-page{
+  position:fixed;inset:0;z-index:500;background:var(--bg);
+  display:none;flex-direction:column;
+}
+.examples-page.open{display:flex;}
+.examples-page-head{
+  display:flex;align-items:center;gap:14px;padding:12px 20px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex-shrink:0;
+}
+.examples-page-head h1{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0;flex:1;}
+.examples-page-body{
+  flex:1;min-height:0;overflow-y:auto;padding:20px;
+  display:flex;flex-direction:column;gap:16px;
+  max-width:1100px;margin:0 auto;width:100%;
+}
+.examples-controls{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+@media(max-width:800px){.examples-controls{grid-template-columns:1fr;}}
+.examples-section h2{
+  font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);
+  border-bottom:1px solid var(--line);padding-bottom:8px;margin:0 0 4px;
+}
+.examples-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;}
+.example-card{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px;
+  display:flex;flex-direction:column;gap:8px;
+}
+.example-card img{width:100%;height:90px;object-fit:cover;border-radius:6px;background:#000;}
+.example-card select{width:100%;}
+.example-card .card-actions{display:flex;gap:6px;}
+.example-card .card-actions button{flex:1;font-size:11px;padding:6px 8px;}
+.category-group{margin-bottom:18px;}
+.category-group h3{
+  font-size:11.5px;color:var(--text);margin:0 0 8px;display:flex;align-items:center;gap:6px;
+  text-transform:none;letter-spacing:normal;
+}
 #stillCanvas{width:100%;border:1px solid var(--line);border-radius:6px;background:#000;display:none;}
+#mapRefContainer{width:100%;height:360px;border-radius:8px;overflow:hidden;border:1px solid var(--line);background:var(--panel-2);}
 
 /* Speed-profile chart drawer */
 #speedChartCanvas{width:100%;height:280px;border:1px solid var(--line);border-radius:6px;background:#0a0d10;display:block;}
@@ -299,7 +338,6 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 .example-row img{width:56px;height:42px;object-fit:cover;border-radius:4px;flex-shrink:0;background:#000;}
 .example-row select{flex:1;font-size:11px;padding:5px 6px;}
 .example-row button{padding:4px 8px;flex-shrink:0;}
-#exampleList{display:flex;flex-direction:column;gap:6px;max-height:38vh;overflow-y:auto;}
 
 footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
   font-family:var(--mono);border-top:1px solid var(--line);flex-shrink:0;}
@@ -497,7 +535,30 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
           <button id="btnResetCalib" disabled>↺ Zurücksetzen</button>
         </div>
         <div class="diag-msg" id="calibStatus">unkalibriert · Anzeige: px/s (relativ)</div>
-        <div class="note">Klicke im Uhrzeigersinn 4 Eckpunkte eines realen Rechtecks an (z. B. Fahrbahnbreite). Die App fragt danach nach Breite und Tiefe in Metern für perspektivisch korrekte Geschwindigkeitsmessung.</div>
+        <div class="note">Klicke im Uhrzeigersinn 4 Eckpunkte eines realen Rechtecks an (z. B. Fahrbahnbreite), dann Breite und Tiefe unten eingeben.</div>
+      </div>
+
+      <div class="step-section" id="depthCaptureForm" style="display:none;">
+        <h3>📏 Tiefenerfassung</h3>
+        <div class="row">
+          <div class="slider-row" style="flex:1;min-width:120px;">
+            <label class="diag-msg" for="depthWidthInput">Breite (m)</label>
+            <input type="number" id="depthWidthInput" step="0.1" min="0.1" style="width:100%;">
+          </div>
+          <div class="slider-row" style="flex:1;min-width:120px;">
+            <label class="diag-msg" for="depthLengthInput">Tiefe (m)</label>
+            <input type="number" id="depthLengthInput" step="0.1" min="0.1" style="width:100%;">
+          </div>
+        </div>
+        <div class="row">
+          <button id="btnDepthSuggest" style="flex:1;">🤖 Automatischer Vorschlag</button>
+          <button id="btnOpenMapRef" style="flex:1;">🗺 Auf Karte messen</button>
+        </div>
+        <div class="diag-msg" id="depthSuggestNote">Tiefe kann aus einem Einzelbild nicht gemessen werden — der Vorschlag ist ein grober Startwert und verfeinert sich automatisch, sobald Fahrzeuge vorbeifahren. Manuell messen oder auf der Karte referenzieren für höhere Anfangsgenauigkeit.</div>
+        <div class="row">
+          <button id="btnDepthApply" class="primary" style="flex:1;">✓ Anwenden</button>
+          <button id="btnDepthCancel" class="ghost">✕ Abbrechen</button>
+        </div>
       </div>
 
       <div class="step-section">
@@ -646,36 +707,72 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
 
 <footer>Client-seitiger Prototyp · keine Serverkommunikation · JSON-Export direkt API-kompatibel aufgebaut</footer>
 
-<div class="training-drawer" id="trainingDrawer">
-  <div class="training-drawer-head">
-    <h2>Trainingsdaten</h2>
-    <button class="ghost" id="btnCloseDrawer">✕</button>
+<!-- ══════════ Trainingsdaten: eigene Unterseite (statt Schublade) ══════════ -->
+<div class="examples-page" id="examplesPage">
+  <div class="examples-page-head">
+    <button class="ghost" id="btnCloseExamplesPage">← Zurück</button>
+    <h1>Trainingsdaten</h1>
+    <span class="diag-msg" id="examplesPageCount">0 Beispiele</span>
   </div>
-  <div class="training-drawer-body">
-    <div class="step-section" style="padding:10px 12px;">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
-        <input type="checkbox" id="autoLearnToggle" checked style="accent-color:var(--accent);">
-        🔁 Fortlaufendes Lernen (automatisch, ohne Klicken)
-      </label>
-      <div class="diag-msg" id="autoLearnStatus" style="margin-top:6px;">Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen und verbessert die Klassifizierung laufend im Hintergrund.</div>
+  <div class="examples-page-body">
+    <div class="examples-controls">
+      <div class="step-section">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+          <input type="checkbox" id="autoLearnToggle" checked style="accent-color:var(--accent);">
+          🔁 Fortlaufendes Lernen (automatisch, ohne Klicken)
+        </label>
+        <div class="diag-msg" id="autoLearnStatus">Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen — sie zählen erst nach Sichtprüfung unten zur Berechnung.</div>
+      </div>
+      <div class="step-section">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+          <input type="checkbox" id="useLearnedProfileToggle" checked style="accent-color:var(--accent);">
+          ✅ Gelerntes Profil fortlaufend verwenden
+        </label>
+        <div class="diag-msg" id="useLearnedProfileStatus">Das gelernte Profil wird bei jeder Klassifizierung bevorzugt genutzt. Deaktivieren, um es bewusst auszublenden — die Beispiele bleiben erhalten.</div>
+      </div>
     </div>
-    <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert, exportiert oder in eine Cloud übertragen</b> (keine Gesichter, keine Kennzeichen — die App hat ohnehin keine Serveranbindung). Die Bild-Vorschau unten dient nur der Kontrolle in dieser Sitzung und verschwindet beim Neuladen. Das <b>Zahlen-Profil selbst bleibt erhalten</b>: es wird lokal in diesem Browser gespeichert (localStorage), damit die Objekterkennung nach einem Neuladen nicht wieder von vorne anfängt.</div>
-    <div class="step-section" style="padding:10px 12px;">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
-        <input type="checkbox" id="useLearnedProfileToggle" checked style="accent-color:var(--accent);">
-        ✅ Gelerntes Profil fortlaufend verwenden
-      </label>
-      <div class="diag-msg" id="useLearnedProfileStatus" style="margin-top:6px;">Das gelernte Profil wird bei jeder Klassifizierung bevorzugt genutzt, sobald genug Beispiele vorliegen. Deaktivieren, um es bewusst auszublenden — die Erkennung nutzt dann nur die Standard-Heuristik, die gesammelten Beispiele bleiben aber erhalten und werden weiter im Hintergrund verfeinert.</div>
-    </div>
-    <div id="exampleList"></div>
+
+    <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert, exportiert oder in eine Cloud übertragen</b> (keine Gesichter, keine Kennzeichen — die App hat ohnehin keine Serveranbindung). Die Bild-Vorschauen dienen nur der Kontrolle in dieser Sitzung und verschwinden beim Neuladen. Das <b>Zahlen-Profil selbst bleibt erhalten</b> (localStorage). <b>Falsch erkannte „Objekte" (die es gar nicht gibt) als „Störung"/„Sonstiges" labeln</b> — auch das fließt in die Berechnung ein und hilft, ähnliche Fehlerkennungen künftig zu vermeiden.</div>
+
     <div class="row">
-      <button id="btnLearnFromExamples" style="flex:1;">🧠 Aus Beispielen lernen</button>
-      <button id="btnResetLearning" disabled title="Gelerntes Profil verwerfen (Beispiele bleiben erhalten)">🗑 Profil</button>
+      <button id="btnLearnFromExamples" style="flex:1;">🧠 Jetzt neu berechnen</button>
+      <button id="btnResetLearning" disabled title="Gelerntes Profil verwerfen (Beispiele bleiben erhalten)">🗑 Profil verwerfen</button>
     </div>
     <div class="diag-msg" id="learnStatus">Noch kein gelerntes Profil aktiv — Standard-Heuristik wird verwendet.</div>
     <div class="row">
       <button id="btnExportExamples" style="flex:1;" disabled>⤓ Profil exportieren (ohne Bilder)</button>
-      <button id="btnClearExamples" disabled>🗑</button>
+      <button id="btnClearExamples" disabled>🗑 Alles löschen</button>
+    </div>
+
+    <div class="examples-section">
+      <h2>Zur Sichtprüfung ausstehend (<span id="pendingCount">0</span>)</h2>
+      <p class="diag-msg">Automatisch im Hintergrund gesammelte Beispiele — zählen erst zur Berechnung, sobald sie hier geprüft und genehmigt wurden.</p>
+      <div class="examples-grid" id="pendingGrid"></div>
+    </div>
+
+    <div class="examples-section">
+      <h2>Kategorisierte Beispiele</h2>
+      <div id="categoryGroups"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ Kartenreferenz-Messung (OpenStreetMap) ══════════ -->
+<div class="training-drawer drawer-wide" id="mapRefDrawer">
+  <div class="training-drawer-head">
+    <h2>Kartenreferenz-Messung</h2>
+    <button class="ghost" id="btnCloseMapRef">✕</button>
+  </div>
+  <div class="training-drawer-body">
+    <div class="note">Klicke zwei Punkte auf der Karte (z. B. Anfang und Ende des sichtbaren Kamerabereichs auf der Fahrbahn), um eine <b>unabhängige Referenzstrecke</b> in Metern zu berechnen — als Ergänzung zur Schätzung/Selbstkalibrierung, wenn Straße/Position auf der Karte erkennbar sind. Nutzt <b>OpenStreetMap</b> (offene, freie Kartendaten), wird beim ersten Öffnen von einem CDN nachgeladen (Internetzugriff nötig).</div>
+    <div id="mapRefContainer"></div>
+    <div class="diag-msg" id="mapRefStatus">Karte wird geladen …</div>
+    <div class="row">
+      <button id="btnMapRefToWidth" style="flex:1;" disabled>→ Als Breite übernehmen</button>
+      <button id="btnMapRefToLength" style="flex:1;" disabled>→ Als Tiefe übernehmen</button>
+    </div>
+    <div class="row">
+      <button id="btnMapRefReset" style="width:100%;">↺ Punkte zurücksetzen</button>
     </div>
   </div>
 </div>
@@ -759,6 +856,21 @@ const viewDensity = document.getElementById('viewDensity');
 const viewFlow    = document.getElementById('viewFlow');
 const viewSpeed   = document.getElementById('viewSpeed');
 
+const depthCaptureForm  = document.getElementById('depthCaptureForm');
+const depthWidthInput   = document.getElementById('depthWidthInput');
+const depthLengthInput  = document.getElementById('depthLengthInput');
+const btnDepthSuggest   = document.getElementById('btnDepthSuggest');
+const btnDepthApply     = document.getElementById('btnDepthApply');
+const btnDepthCancel    = document.getElementById('btnDepthCancel');
+const btnOpenMapRef     = document.getElementById('btnOpenMapRef');
+const btnCloseMapRef    = document.getElementById('btnCloseMapRef');
+const mapRefDrawer      = document.getElementById('mapRefDrawer');
+const mapRefContainer   = document.getElementById('mapRefContainer');
+const mapRefStatus      = document.getElementById('mapRefStatus');
+const btnMapRefToWidth  = document.getElementById('btnMapRefToWidth');
+const btnMapRefToLength = document.getElementById('btnMapRefToLength');
+const btnMapRefReset    = document.getElementById('btnMapRefReset');
+
 const btnCalibrate         = document.getElementById('btnCalibrate');
 const btnResetCalib        = document.getElementById('btnResetCalib');
 const calibStatus          = document.getElementById('calibStatus');
@@ -821,13 +933,16 @@ function openToolDrawer(el){
   toolsMenu.classList.remove('open');
 }
 
-const exampleList       = document.getElementById('exampleList');
 const exampleCount      = document.getElementById('exampleCount');
 const btnExportExamples = document.getElementById('btnExportExamples');
 const btnClearExamples  = document.getElementById('btnClearExamples');
 const btnTrainingDrawer = document.getElementById('btnTrainingDrawer');
-const btnCloseDrawer    = document.getElementById('btnCloseDrawer');
-const trainingDrawer    = document.getElementById('trainingDrawer');
+const examplesPage      = document.getElementById('examplesPage');
+const btnCloseExamplesPage = document.getElementById('btnCloseExamplesPage');
+const examplesPageCount = document.getElementById('examplesPageCount');
+const categoryGroups    = document.getElementById('categoryGroups');
+const pendingGrid       = document.getElementById('pendingGrid');
+const pendingCount      = document.getElementById('pendingCount');
 const btnLearnFromExamples = document.getElementById('btnLearnFromExamples');
 const btnResetLearning     = document.getElementById('btnResetLearning');
 const learnStatus          = document.getElementById('learnStatus');
@@ -861,6 +976,7 @@ const stctx               = stillCanvas.getContext('2d');
 const stillResultList     = document.getElementById('stillResultList');
 
 const appBody         = document.getElementById('appBody');
+const contentCol      = document.getElementById('contentCol');
 const cameraDiag      = document.getElementById('cameraDiag');
 const sourceMsg       = document.getElementById('sourceMsg');
 const btnToStep2      = document.getElementById('btnToStep2');
@@ -888,6 +1004,10 @@ function goToStep(target){
     const p = document.getElementById('panel-' + target);
     if(p) p.classList.add('active');
   }
+  // always land at the top of the new step — otherwise the content column
+  // keeps whatever scroll position the previous step was left at, which can
+  // hide the first section(s) of the step the user just navigated to
+  contentCol.scrollTop = 0;
 
   // layout mode
   if(target === 'live'){
@@ -1230,11 +1350,137 @@ function applyCalibrationFromPoints(nativePts,width,length){
     calibration={H,Hinv,width,length,nativePoints:nativePts.slice()};
     btnResetCalib.disabled=false;
     updateCalibSummary();
+    // depth/length can't be measured from a single image regardless of how
+    // this calibration was created (manual click, lane suggestion, or the
+    // automatic flow) — always keep refining it from observed vehicles
+    autoCalibActive=true;
     return true;
   }
   calibStatus.textContent='Kalibrierung fehlgeschlagen (Punkte kollinear?)';
   return false;
 }
+
+// Shared depth-capture form: replaces window.prompt() for both the manual
+// 4-point flow and the "review the lane suggestion first" flow, with an
+// editable pair of fields and an explicit automatic suggestion for the
+// depth (the one dimension a single image can never truly measure).
+let pendingCalibPoints=null;
+function suggestDepthM(width){
+  // no observed traffic yet at this point (calibration isn't applied), so
+  // this is a generic starting guess — collectAutoCalibSample() takes over
+  // and corrects it for real once vehicles pass
+  return +(width*2).toFixed(1);
+}
+function openDepthCaptureForm(nativePts, defaultWidth){
+  pendingCalibPoints=nativePts;
+  depthWidthInput.value=defaultWidth;
+  depthLengthInput.value=suggestDepthM(parseFloat(defaultWidth)||3);
+  depthCaptureForm.style.display='flex';
+  depthCaptureForm.scrollIntoView({block:'nearest'});
+}
+btnDepthSuggest.addEventListener('click', () => {
+  const w=parseFloat((depthWidthInput.value||'').replace(',','.'))||3;
+  depthLengthInput.value=suggestDepthM(w);
+});
+btnDepthApply.addEventListener('click', () => {
+  if(!pendingCalibPoints) return;
+  const width=parseFloat((depthWidthInput.value||'').replace(',','.'));
+  const length=parseFloat((depthLengthInput.value||'').replace(',','.'));
+  const pts=pendingCalibPoints; pendingCalibPoints=null;
+  depthCaptureForm.style.display='none';
+  if(!applyCalibrationFromPoints(pts,width,length))
+    calibStatus.textContent='Kalibrierung abgebrochen · px/s (relativ)';
+});
+btnDepthCancel.addEventListener('click', () => {
+  pendingCalibPoints=null;
+  depthCaptureForm.style.display='none';
+  calibStatus.textContent='Kalibrierung abgebrochen · px/s (relativ)';
+});
+
+/* ══════════════════════════════════════════
+   Map reference measurement (OpenStreetMap via Leaflet, CDN-loaded)
+   A supplementary, independent way to estimate a real-world distance:
+   click two points on an actual map (e.g. the visible extent of the camera
+   view on the road) and get the great-circle distance between them, which
+   can be applied straight into the width/length fields above. Doesn't
+   replace on-site measurement or the self-calibration from traffic, just
+   gives another reference point when the road is identifiable on the map.
+══════════════════════════════════════════ */
+function loadCSS(href){
+  return new Promise((resolve,reject) => {
+    if([...document.styleSheets].some(s=>s.href===href)){ resolve(); return; }
+    const l=document.createElement('link');
+    l.rel='stylesheet'; l.href=href; l.onload=()=>resolve(); l.onerror=()=>reject(new Error('CSS laden fehlgeschlagen: '+href));
+    document.head.appendChild(l);
+  });
+}
+let mapRefInstance=null, mapRefPoints=[], mapRefMarkers=[], mapRefLine=null;
+function haversineMeters(a,b){
+  const R=6371000, toRad=d=>d*Math.PI/180;
+  const dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng);
+  const s=Math.sin(dLat/2)**2 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+async function ensureMapRef(){
+  if(mapRefInstance) return mapRefInstance;
+  mapRefStatus.textContent='Lade Karte (einmalig, benötigt Internetzugriff) …';
+  await loadCSS('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css');
+  if(!window.L) await loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js');
+  const startLatLng=[51.1657,10.4515]; // Germany, generic default — user pans/zooms to their location
+  mapRefInstance=window.L.map(mapRefContainer).setView(startLatLng, 6);
+  window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom:19, attribution:'© OpenStreetMap-Mitwirkende'
+  }).addTo(mapRefInstance);
+  mapRefInstance.on('click', onMapRefClick);
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(
+      pos => mapRefInstance.setView([pos.coords.latitude, pos.coords.longitude], 18),
+      () => {} // no permission/support — keep the generic default view, not fatal
+    );
+  }
+  mapRefStatus.textContent='Zwei Punkte anklicken (z. B. Anfang/Ende des sichtbaren Bereichs).';
+  return mapRefInstance;
+}
+function onMapRefClick(ev){
+  if(mapRefPoints.length>=2){
+    mapRefPoints=[]; mapRefMarkers.forEach(m=>mapRefInstance.removeLayer(m)); mapRefMarkers=[];
+    if(mapRefLine){ mapRefInstance.removeLayer(mapRefLine); mapRefLine=null; }
+    btnMapRefToWidth.disabled=true; btnMapRefToLength.disabled=true;
+  }
+  const pt={lat:ev.latlng.lat, lng:ev.latlng.lng};
+  mapRefPoints.push(pt);
+  mapRefMarkers.push(window.L.circleMarker(ev.latlng, {radius:6, color:'#28e0c5'}).addTo(mapRefInstance));
+  if(mapRefPoints.length===1){
+    mapRefStatus.textContent='Punkt 1 gesetzt — zweiten Punkt anklicken.';
+  } else {
+    mapRefLine=window.L.polyline(mapRefPoints.map(p=>[p.lat,p.lng]), {color:'#28e0c5', dashArray:'5,5'}).addTo(mapRefInstance);
+    const dist=haversineMeters(mapRefPoints[0], mapRefPoints[1]);
+    mapRefStatus.textContent=`Gemessene Strecke: ${dist.toFixed(1)} m — als Breite oder Tiefe übernehmen, oder erneut klicken für eine neue Messung.`;
+    btnMapRefToWidth.disabled=false; btnMapRefToLength.disabled=false;
+    btnMapRefToWidth.dataset.value=dist.toFixed(1);
+    btnMapRefToLength.dataset.value=dist.toFixed(1);
+  }
+}
+btnOpenMapRef.addEventListener('click', async () => {
+  openToolDrawer(mapRefDrawer);
+  const map=await ensureMapRef();
+  setTimeout(() => map.invalidateSize(), 50); // drawer transition can leave Leaflet with a stale size otherwise
+});
+btnCloseMapRef.addEventListener('click', () => mapRefDrawer.classList.remove('open'));
+btnMapRefReset.addEventListener('click', () => {
+  mapRefPoints=[]; mapRefMarkers.forEach(m=>mapRefInstance.removeLayer(m)); mapRefMarkers=[];
+  if(mapRefLine){ mapRefInstance.removeLayer(mapRefLine); mapRefLine=null; }
+  btnMapRefToWidth.disabled=true; btnMapRefToLength.disabled=true;
+  mapRefStatus.textContent='Zwei Punkte anklicken (z. B. Anfang/Ende des sichtbaren Bereichs).';
+});
+btnMapRefToWidth.addEventListener('click', () => {
+  depthWidthInput.value=btnMapRefToWidth.dataset.value;
+  mapRefDrawer.classList.remove('open');
+});
+btnMapRefToLength.addEventListener('click', () => {
+  depthLengthInput.value=btnMapRefToLength.dataset.value;
+  mapRefDrawer.classList.remove('open');
+});
 
 btnCalibrate.addEventListener('click', () => {
   calibrationMode=true; calibClicks=[];
@@ -1247,16 +1493,12 @@ function handleCalibClick(native){
   if(calibClicks.length<4){
     calibStatus.textContent=`Punkt ${calibClicks.length+1}/4 …`; return;
   }
-  const wIn=window.prompt('Reale Breite des Rechtecks in Metern (Punkt 1→2):',widthPreset.value);
-  const width=parseFloat((wIn||'').replace(',','.'));
-  const lIn=window.prompt('Reale Tiefe des Rechtecks in Metern (Punkt 2→3) — bitte selbst messen:','5');
-  const length=parseFloat((lIn||'').replace(',','.'));
   calibrationMode=false;
   overlay.style.pointerEvents='none';
   document.body.classList.remove('calib-active');
   const pts=calibClicks.slice(); calibClicks=[];
-  if(!applyCalibrationFromPoints(pts,width,length))
-    calibStatus.textContent='Kalibrierung abgebrochen · px/s (relativ)';
+  calibStatus.textContent='4 Punkte gesetzt — Breite/Tiefe unten eingeben.';
+  openDepthCaptureForm(pts, widthPreset.value);
 }
 btnResetCalib.addEventListener('click', () => {
   calibration=null; btnResetCalib.disabled=true;
@@ -1373,6 +1615,7 @@ function saveLearningState(){
       useLearnedProfile,
       trainingExamples: trainingExamples.map(({id,label,feat,capturedAt,trackId})=>({id,label,feat,capturedAt,trackId})),
       autoLearnPool,
+      pendingAutoSamples: pendingAutoSamples.map(({id,label,feat,capturedAt})=>({id,label,feat,capturedAt})),
       autoLearnRounds,
       exampleNextId
     };
@@ -1392,6 +1635,7 @@ function loadLearningState(){
     }
     if(Array.isArray(data.trainingExamples)) trainingExamples=data.trainingExamples.map(ex=>({...ex,_preview:null}));
     if(Array.isArray(data.autoLearnPool)) autoLearnPool=data.autoLearnPool;
+    if(Array.isArray(data.pendingAutoSamples)) pendingAutoSamples=data.pendingAutoSamples.map(ex=>({...ex,_preview:null}));
     if(typeof data.autoLearnRounds==='number') autoLearnRounds=data.autoLearnRounds;
     if(typeof data.exampleNextId==='number') exampleNextId=data.exampleNextId;
     return true;
@@ -1403,8 +1647,15 @@ function clearLearningState(){
 }
 
 // Drawer open/close — reachable from any wizard step, not just Live
-btnTrainingDrawer.addEventListener('click', () => openToolDrawer(trainingDrawer));
-btnCloseDrawer.addEventListener('click', () => trainingDrawer.classList.remove('open'));
+function openExamplesPage(){
+  document.querySelectorAll('.training-drawer.open').forEach(d => d.classList.remove('open'));
+  toolsMenu.classList.remove('open');
+  examplesPage.classList.add('open');
+  renderPendingList();
+  renderExampleList();
+}
+btnTrainingDrawer.addEventListener('click', openExamplesPage);
+btnCloseExamplesPage.addEventListener('click', () => examplesPage.classList.remove('open'));
 
 btnCaptureMode.addEventListener('click', () => {
   captureMode=!captureMode;
@@ -1476,36 +1727,78 @@ function captureExample(t){
   };
   trainingExamples.push(ex);
   renderExampleList();
-  captureStatus.textContent=`Beispiel #${ex.id} erfasst als "${ex.label}" (nur Merkmale, kein Bild gespeichert). Label bei Bedarf unten anpassen.`;
+  recomputeLearnedProfile();
+  captureStatus.textContent=`Beispiel #${ex.id} erfasst als "${ex.label}" (nur Merkmale, kein Bild gespeichert). Label bei Bedarf auf der Trainingsdaten-Seite anpassen.`;
 }
-function renderExampleList(){
-  exampleList.innerHTML='';
-  trainingExamples.forEach(ex => {
-    const row=document.createElement('div');
-    row.className='example-row';
-    const img=document.createElement('img');
-    img.src=ex._preview || '';
-    img.alt='Vorschau (nur diese Sitzung)';
-    const sel=document.createElement('select');
-    CLASS_OPTIONS.forEach(c=>{
-      const o=document.createElement('option'); o.value=c; o.textContent=c;
-      if(c===ex.label) o.selected=true;
-      sel.appendChild(o);
-    });
-    sel.addEventListener('change', () => { ex.label=sel.value; });
-    const del=document.createElement('button');
-    del.textContent='✕';
-    del.addEventListener('click', () => {
-      trainingExamples=trainingExamples.filter(e=>e.id!==ex.id);
-      renderExampleList();
-    });
-    row.appendChild(img); row.appendChild(sel); row.appendChild(del);
-    exampleList.appendChild(row);
+
+function makeExampleCard(ex, {onLabelChange, actions}){
+  const card=document.createElement('div');
+  card.className='example-card';
+  const img=document.createElement('img');
+  img.src=ex._preview || '';
+  img.alt='Vorschau (nur diese Sitzung)';
+  const sel=document.createElement('select');
+  CLASS_OPTIONS.forEach(c=>{
+    const o=document.createElement('option'); o.value=c; o.textContent=c;
+    if(c===ex.label) o.selected=true;
+    sel.appendChild(o);
   });
+  sel.addEventListener('change', () => { ex.label=sel.value; onLabelChange(); });
+  const actionsRow=document.createElement('div');
+  actionsRow.className='card-actions';
+  actions.forEach(({label,cls,onClick}) => {
+    const btn=document.createElement('button');
+    btn.textContent=label; if(cls) btn.className=cls;
+    btn.addEventListener('click', onClick);
+    actionsRow.appendChild(btn);
+  });
+  card.appendChild(img); card.appendChild(sel); card.appendChild(actionsRow);
+  return card;
+}
+
+// Categorized by class instead of one flat cramped list — each class gets
+// its own section and full-size editable cards.
+function renderExampleList(){
+  categoryGroups.innerHTML='';
+  const byClass={};
+  CLASS_OPTIONS.forEach(c=>byClass[c]=[]);
+  trainingExamples.forEach(ex => { (byClass[ex.label]=byClass[ex.label]||[]).push(ex); });
+
+  for(const cls of CLASS_OPTIONS){
+    const list=byClass[cls]||[];
+    const group=document.createElement('div');
+    group.className='category-group';
+    const heading=document.createElement('h3');
+    heading.innerHTML=`<span class="cdot" style="background:${classColor[cls]||'#7a8a94'};"></span>${cls} (${list.length})`;
+    group.appendChild(heading);
+    const grid=document.createElement('div');
+    grid.className='examples-grid';
+    if(!list.length){
+      const empty=document.createElement('div');
+      empty.className='diag-msg';
+      empty.textContent='Noch keine Beispiele in dieser Kategorie.';
+      grid.appendChild(empty);
+    }
+    list.forEach(ex => {
+      const card=makeExampleCard(ex, {
+        onLabelChange: () => { renderExampleList(); recomputeLearnedProfile(); },
+        actions:[{label:'✕ Löschen', onClick:() => {
+          trainingExamples=trainingExamples.filter(e=>e.id!==ex.id);
+          renderExampleList();
+          recomputeLearnedProfile();
+        }}]
+      });
+      grid.appendChild(card);
+    });
+    group.appendChild(grid);
+    categoryGroups.appendChild(group);
+  }
+
   const has=trainingExamples.length>0;
   btnExportExamples.disabled=!has;
   btnClearExamples.disabled=!has;
   exampleCount.textContent=trainingExamples.length;
+  if(examplesPageCount) examplesPageCount.textContent=`${trainingExamples.length} Beispiel(e) · ${autoLearnPool.length} geprüfte automatische · ${pendingAutoSamples.length} zur Prüfung`;
   saveLearningState();
 }
 
@@ -1534,18 +1827,27 @@ function computeProfileFromSamples(samples){
   return {profile, usableClasses};
 }
 
-function learnFromExamples(){
-  const {profile,usableClasses}=computeProfileFromSamples(trainingExamples);
+// Single source of truth for (re)computing the learned profile — called
+// automatically whenever the counted data changes (manual capture, a label
+// edit/deletion, or a pending sample getting approved), not just on request,
+// so the determination is always up to date with what's actually been
+// collected/reviewed. Combines manual examples with *approved* auto samples
+// only — pending ones never influence this until reviewed.
+function recomputeLearnedProfile(){
+  const combined=[...trainingExamples, ...autoLearnPool];
+  const {profile,usableClasses}=computeProfileFromSamples(combined);
   if(usableClasses<2){
-    learnStatus.textContent='Zu wenige Beispiele (mind. 3 pro Klasse, mind. 2 Klassen nötig) — Standard-Heuristik bleibt aktiv.';
+    learnStatus.textContent=`Zu wenige Beispiele (mind. 3 pro Klasse, mind. 2 Klassen nötig — aktuell ${combined.length} insgesamt) — Standard-Heuristik bleibt aktiv.`;
+    saveLearningState();
     return;
   }
   learnedProfile=profile;
+  autoLearnRounds++;
   btnResetLearning.disabled=false;
-  learnStatus.textContent=`Gelerntes Profil aktiv aus ${trainingExamples.length} Beispiel(en), ${usableClasses} Klasse(n) — wird bei neuen Klassifizierungen bevorzugt genutzt.`;
+  learnStatus.textContent=`Profil aktualisiert (${autoLearnRounds}. Berechnung) aus ${trainingExamples.length} manuellen + ${autoLearnPool.length} geprüften automatischen Beispiel(en), ${usableClasses} Klasse(n).`;
   saveLearningState();
 }
-btnLearnFromExamples.addEventListener('click', learnFromExamples);
+btnLearnFromExamples.addEventListener('click', recomputeLearnedProfile);
 btnResetLearning.addEventListener('click', () => {
   learnedProfile=null; btnResetLearning.disabled=true;
   learnStatus.textContent='Gelerntes Profil zurückgesetzt — Standard-Heuristik ist wieder aktiv.';
@@ -1553,23 +1855,26 @@ btnResetLearning.addEventListener('click', () => {
 });
 
 /* ══════════════════════════════════════════
-   Continuous auto-learning — no manual capture or button click needed.
+   Continuous auto-learning — no manual capture click needed, but every
+   auto-collected sample first goes through a visual review queue before it
+   can influence anything.
    While the analysis runs, confidently-classified vehicles (measured via
    calibrated real-world width, clear of any class boundary — never via the
    currently-learned profile itself, to avoid a self-reinforcing feedback
-   loop) are quietly added to a background pool. The learned profile is
-   re-derived every few samples, so detection keeps improving on its own the
-   longer the camera runs.
+   loop) are quietly captured with a preview thumbnail into "Zur
+   Sichtprüfung ausstehend". They only join the counted pool — and only then
+   affect the learned profile — once a person has looked at them on the
+   Trainingsdaten page and approved (or rejected) them.
 ══════════════════════════════════════════ */
-let autoLearnEnabled=true, autoLearnPool=[], autoLearnRounds=0;
-const AUTO_LEARN_BATCH=8, AUTO_LEARN_POOL_CAP=300;
+let autoLearnEnabled=true, autoLearnPool=[], pendingAutoSamples=[], autoLearnRounds=0;
+const AUTO_LEARN_POOL_CAP=300, PENDING_CAP=100;
 const CLASS_WIDTH_BOUNDARY_M=[1.0,1.1,2.2], CLASS_BOUNDARY_MARGIN_M=0.12;
 
 autoLearnToggle.addEventListener('change', () => {
   autoLearnEnabled=autoLearnToggle.checked;
   autoLearnStatus.textContent = autoLearnEnabled
-    ? 'Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen und verbessert die Klassifizierung laufend im Hintergrund.'
-    : 'Fortlaufendes Lernen pausiert — bereits gelerntes Profil bleibt aktiv, es werden aber keine neuen automatischen Beispiele mehr gesammelt.';
+    ? 'Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen — sie zählen erst nach Sichtprüfung zur Berechnung.'
+    : 'Fortlaufendes Lernen pausiert — bereits genehmigte Beispiele/Profil bleiben aktiv, es werden aber keine neuen automatischen Beispiele mehr gesammelt.';
 });
 
 function collectAutoLearnSample(t){
@@ -1578,19 +1883,44 @@ function collectAutoLearnSample(t){
   if(!isFinite(wm) || wm<=0) return;
   if(CLASS_WIDTH_BOUNDARY_M.some(b=>Math.abs(wm-b)<CLASS_BOUNDARY_MARGIN_M)) return; // too ambiguous, skip
   const label=staticClassifyByWidth(t.h>t.w*1.5, wm);
-  autoLearnPool.push({label, feat:{widthM:+wm.toFixed(2), areaPx:Math.round(t.area||0)}});
-  if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
-  if(autoLearnPool.length%AUTO_LEARN_BATCH===0) refineAutoLearnedProfile();
+  const ex={
+    id:exampleNextId++, label, feat:{widthM:+wm.toFixed(2), areaPx:Math.round(t.area||0)},
+    capturedAt:new Date().toISOString(), _preview:capturePreview(t)
+  };
+  pendingAutoSamples.push(ex);
+  if(pendingAutoSamples.length>PENDING_CAP) pendingAutoSamples.splice(0, pendingAutoSamples.length-PENDING_CAP);
+  renderPendingList();
+  saveLearningState();
 }
 
-function refineAutoLearnedProfile(){
-  const combined=[...trainingExamples, ...autoLearnPool];
-  const {profile,usableClasses}=computeProfileFromSamples(combined);
-  if(usableClasses<2) return;
-  learnedProfile=profile;
-  autoLearnRounds++;
-  btnResetLearning.disabled=false;
-  learnStatus.textContent=`Fortlaufendes Lernen aktiv: ${autoLearnRounds}. Verfeinerung aus ${autoLearnPool.length} automatisch beobachteten + ${trainingExamples.length} manuellen Beispiel(en), ${usableClasses} Klasse(n).`;
+function renderPendingList(){
+  pendingGrid.innerHTML='';
+  pendingAutoSamples.forEach(ex => {
+    const card=makeExampleCard(ex, {
+      onLabelChange: () => {}, // just edits the label in place before a decision
+      actions:[
+        {label:'✓ Genehmigen', cls:'primary', onClick:() => approvePendingSample(ex.id)},
+        {label:'✕ Ablehnen', onClick:() => rejectPendingSample(ex.id)}
+      ]
+    });
+    pendingGrid.appendChild(card);
+  });
+  pendingCount.textContent=pendingAutoSamples.length;
+  if(examplesPageCount) examplesPageCount.textContent=`${trainingExamples.length} Beispiel(e) · ${autoLearnPool.length} geprüfte automatische · ${pendingAutoSamples.length} zur Prüfung`;
+}
+function approvePendingSample(id){
+  const idx=pendingAutoSamples.findIndex(e=>e.id===id);
+  if(idx<0) return;
+  const [ex]=pendingAutoSamples.splice(idx,1);
+  autoLearnPool.push({label:ex.label, feat:ex.feat});
+  if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
+  renderPendingList();
+  renderExampleList();
+  recomputeLearnedProfile();
+}
+function rejectPendingSample(id){
+  pendingAutoSamples=pendingAutoSamples.filter(e=>e.id!==id);
+  renderPendingList();
   saveLearningState();
 }
 
@@ -1600,7 +1930,8 @@ btnExportExamples.addEventListener('click', () => {
     classes:CLASS_OPTIONS,
     note:'Enthält nur abgeleitete Zahlen-Merkmale je Beispiel, keine Bilddaten.',
     learnedProfile,
-    examples:trainingExamples.map(({id,label,feat,capturedAt,trackId})=>({id,label,feat,capturedAt,trackId}))
+    examples:trainingExamples.map(({id,label,feat,capturedAt,trackId})=>({id,label,feat,capturedAt,trackId})),
+    approvedAutoSamples:autoLearnPool
   };
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
@@ -1609,11 +1940,12 @@ btnExportExamples.addEventListener('click', () => {
 });
 btnClearExamples.addEventListener('click', () => {
   if(!confirm('Alle gesammelten Beispiele, das automatisch gesammelte Profil und den gespeicherten Lernfortschritt in diesem Browser löschen?')) return;
-  trainingExamples=[]; autoLearnPool=[]; autoLearnRounds=0; learnedProfile=null;
+  trainingExamples=[]; autoLearnPool=[]; pendingAutoSamples=[]; autoLearnRounds=0; learnedProfile=null;
   btnResetLearning.disabled=true;
   learnStatus.textContent='Gelerntes Profil zurückgesetzt — Standard-Heuristik ist wieder aktiv.';
   clearLearningState();
   renderExampleList();
+  renderPendingList();
 });
 
 /* ══════════════════════════════════════════
@@ -1859,6 +2191,7 @@ function pushStillDetectionAsExample(det){
   const ex={id:exampleNextId++, label:det.cls, feat, capturedAt:new Date().toISOString(), trackId:null, _preview:prevC.toDataURL('image/jpeg',0.7)};
   trainingExamples.push(ex);
   renderExampleList();
+  recomputeLearnedProfile();
 }
 
 /* ══════════════════════════════════════════
@@ -2065,11 +2398,7 @@ btnAnalyzeLanes.addEventListener('click', () => {
 
 btnApplyLaneSuggestion.addEventListener('click', () => {
   if(!laneSuggestion) return;
-  const wIn=window.prompt('Reale Fahrbahnbreite in Metern:',widthPreset.value);
-  const width=parseFloat((wIn||'').replace(',','.'));
-  const lIn=window.prompt('Reale Tiefe in Metern (zwischen den beiden Bildzeilen — bitte messen):','10');
-  const length=parseFloat((lIn||'').replace(',','.'));
-  applyCalibrationFromPoints(laneSuggestion.nativePoints,width,length);
+  openDepthCaptureForm(laneSuggestion.nativePoints, widthPreset.value);
 });
 
 /* ══════════════════════════════════════════
@@ -3076,6 +3405,7 @@ refreshStepper();
 // any image anywhere (only the numeric feature profile is persisted).
 if(loadLearningState()){
   renderExampleList();
+  renderPendingList();
   if(learnedProfile){
     btnResetLearning.disabled=false;
     const usableClasses=Object.keys(learnedProfile).length;
