@@ -239,6 +239,13 @@ input[type=range]{width:100%;accent-color:var(--accent);}
   transition:transform .2s ease;box-shadow:-8px 0 24px rgba(0,0,0,.35);
 }
 .training-drawer.open{transform:translateX(0);}
+.training-fab.fab-left{right:auto;left:16px;}
+.training-drawer.drawer-left{
+  right:auto;left:0;border-left:none;border-right:1px solid var(--line);
+  transform:translateX(-100%);
+}
+.training-drawer.drawer-left.open{transform:translateX(0);}
+#stillCanvas{width:100%;border:1px solid var(--line);border-radius:6px;background:#000;display:none;}
 .training-drawer-head{
   display:flex;align-items:center;justify-content:space-between;
   padding:14px 16px;border-bottom:1px solid var(--line);flex-shrink:0;
@@ -602,6 +609,26 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
   </div>
 </div>
 
+<!-- ══════════ Standbild-Erkennung (Fahrzeuge/Personen ohne Bewegung) ══════════ -->
+<button class="training-fab fab-left" id="btnStillDrawer">📷 Standbild-Erkennung</button>
+<div class="training-drawer drawer-left" id="stillDrawer">
+  <div class="training-drawer-head">
+    <h2>Standbild-Erkennung</h2>
+    <button class="ghost" id="btnCloseStillDrawer">✕</button>
+  </div>
+  <div class="training-drawer-body">
+    <div class="note">Erkennt Fahrzeuge &amp; Personen auf einem <b>Einzelbild</b> (Foto oder Standbild) — im Gegensatz zur Live-Analyse unabhängig von Bewegung. Nutzt ein vortrainiertes Modell (COCO-SSD), das beim ersten Klick von einem CDN nachgeladen wird (Internetzugriff nötig).</div>
+    <div class="row">
+      <button id="btnUseCurrentFrame" style="flex:1;">🎞 Aktuelles Kamerabild</button>
+    </div>
+    <input type="file" id="stillFileInput" accept="image/*" style="width:100%;">
+    <button id="btnRunStillDetect" class="primary" style="width:100%;" disabled>🔍 Analysieren</button>
+    <div class="diag-msg" id="stillStatus">Bild wählen, dann analysieren.</div>
+    <canvas id="stillCanvas"></canvas>
+    <div id="stillResultList"></div>
+  </div>
+</div>
+
 <script>
 (function(){
 'use strict';
@@ -693,6 +720,17 @@ const trainingDrawer    = document.getElementById('trainingDrawer');
 const btnLearnFromExamples = document.getElementById('btnLearnFromExamples');
 const btnResetLearning     = document.getElementById('btnResetLearning');
 const learnStatus          = document.getElementById('learnStatus');
+
+const btnStillDrawer      = document.getElementById('btnStillDrawer');
+const btnCloseStillDrawer = document.getElementById('btnCloseStillDrawer');
+const stillDrawer         = document.getElementById('stillDrawer');
+const btnUseCurrentFrame  = document.getElementById('btnUseCurrentFrame');
+const stillFileInput      = document.getElementById('stillFileInput');
+const btnRunStillDetect   = document.getElementById('btnRunStillDetect');
+const stillStatus         = document.getElementById('stillStatus');
+const stillCanvas         = document.getElementById('stillCanvas');
+const stctx               = stillCanvas.getContext('2d');
+const stillResultList     = document.getElementById('stillResultList');
 
 const appBody         = document.getElementById('appBody');
 const cameraDiag      = document.getElementById('cameraDiag');
@@ -1325,6 +1363,140 @@ btnClearExamples.addEventListener('click', () => {
   if(!confirm('Alle gesammelten Beispiele löschen?')) return;
   trainingExamples=[]; renderExampleList();
 });
+
+/* ══════════════════════════════════════════
+   Still-image detection (vehicles/people without motion)
+   Classical frame-differencing needs motion across frames and cannot see a
+   static photo at all — this uses a pretrained model (COCO-SSD via
+   TensorFlow.js, lazy-loaded from a CDN on first use) instead.
+══════════════════════════════════════════ */
+btnStillDrawer.addEventListener('click', () => stillDrawer.classList.add('open'));
+btnCloseStillDrawer.addEventListener('click', () => stillDrawer.classList.remove('open'));
+
+const stillBase = document.createElement('canvas');
+let stillIsLiveFrame = false, stillDetections = [];
+
+function loadScript(src){
+  return new Promise((resolve,reject) => {
+    const s=document.createElement('script');
+    s.src=src; s.onload=()=>resolve(); s.onerror=()=>reject(new Error('Laden fehlgeschlagen: '+src));
+    document.head.appendChild(s);
+  });
+}
+let cocoModel=null;
+async function ensureCocoModel(){
+  if(cocoModel) return cocoModel;
+  stillStatus.textContent='Lade Erkennungsmodell (einmalig, benötigt Internetzugriff) …';
+  if(!window.tf) await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
+  if(!window.cocoSsd) await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
+  cocoModel=await window.cocoSsd.load();
+  return cocoModel;
+}
+
+function loadStillImage(src, isLiveFrame){
+  const w=src.width||src.naturalWidth, h=src.height||src.naturalHeight;
+  stillBase.width=w; stillBase.height=h;
+  stillBase.getContext('2d').drawImage(src,0,0,w,h);
+  stillCanvas.width=w; stillCanvas.height=h; stillCanvas.style.display='block';
+  stctx.drawImage(stillBase,0,0);
+  stillIsLiveFrame=isLiveFrame;
+  stillDetections=[];
+  stillResultList.innerHTML='';
+  btnRunStillDetect.disabled=false;
+  stillStatus.textContent='Bild geladen — bereit zur Analyse.';
+}
+btnUseCurrentFrame.addEventListener('click', () => {
+  if(!hasSource||video.videoWidth===0){ stillStatus.textContent='Keine Videoquelle geladen.'; return; }
+  const c=document.createElement('canvas'); c.width=video.videoWidth; c.height=video.videoHeight;
+  try{ c.getContext('2d').drawImage(video,0,0); }
+  catch(e){ stillStatus.textContent='Bild blockiert (CORS). Webcam oder lokale Datei verwenden.'; return; }
+  loadStillImage(c, true);
+});
+stillFileInput.addEventListener('change', () => {
+  const f=stillFileInput.files[0]; if(!f) return;
+  const img=new Image();
+  img.onload=()=>loadStillImage(img, false);
+  img.src=URL.createObjectURL(f);
+});
+
+const COCO_CLASS_MAP={car:'PKW',truck:'LKW/Bus',bus:'LKW/Bus',motorcycle:'Motorrad/Fahrrad',bicycle:'Motorrad/Fahrrad',person:'Person'};
+
+btnRunStillDetect.addEventListener('click', async () => {
+  if(!stillBase.width) return;
+  btnRunStillDetect.disabled=true;
+  try{
+    const model=await ensureCocoModel();
+    stillStatus.textContent='Analysiere …';
+    const preds=await model.detect(stillBase);
+    stillDetections=preds.filter(p=>COCO_CLASS_MAP[p.class]).map((p,i)=>({
+      id:i, cls:COCO_CLASS_MAP[p.class], score:p.score, bbox:p.bbox
+    }));
+    drawStillDetections();
+    renderStillResultList();
+    stillStatus.textContent = stillDetections.length
+      ? `${stillDetections.length} Objekt(e) erkannt.`
+      : 'Keine Fahrzeuge/Personen erkannt.';
+  }catch(e){
+    stillStatus.textContent='Fehler: '+e.message;
+  }
+  btnRunStillDetect.disabled=false;
+});
+
+function drawStillDetections(){
+  stctx.clearRect(0,0,stillCanvas.width,stillCanvas.height);
+  stctx.drawImage(stillBase,0,0);
+  for(const det of stillDetections){
+    const [x,y,w,h]=det.bbox;
+    const col=classColor[det.cls]||'#28e0c5';
+    stctx.strokeStyle=col; stctx.lineWidth=Math.max(2,stillCanvas.width/300);
+    stctx.strokeRect(x,y,w,h);
+    const label=`${det.cls} ${Math.round(det.score*100)}%`;
+    stctx.font=Math.max(12,stillCanvas.width/60)+'px monospace';
+    const tw=stctx.measureText(label).width;
+    stctx.fillStyle='rgba(10,13,16,0.72)'; stctx.fillRect(x,Math.max(0,y-18),tw+8,18);
+    stctx.fillStyle=col; stctx.fillText(label,x+4,Math.max(13,y-5));
+  }
+}
+function renderStillResultList(){
+  stillResultList.innerHTML='';
+  stillDetections.forEach(det => {
+    const row=document.createElement('div');
+    row.className='example-row';
+    const lbl=document.createElement('span');
+    lbl.style.cssText='flex:1;font-size:11px;';
+    lbl.textContent=`${det.cls} (${Math.round(det.score*100)}%)`;
+    const btn=document.createElement('button');
+    btn.textContent='→ Als Beispiel';
+    btn.addEventListener('click', () => {
+      pushStillDetectionAsExample(det);
+      btn.disabled=true; btn.textContent='✓ übernommen';
+    });
+    row.appendChild(lbl); row.appendChild(btn);
+    stillResultList.appendChild(row);
+  });
+}
+
+// Feeds a still-image detection into the same feature-only training pool as
+// live capture — same rule applies: numeric profile only, no stored image.
+function pushStillDetectionAsExample(det){
+  const [x,y,w,h]=det.bbox;
+  let widthM=null;
+  if(stillIsLiveFrame && calibration){
+    const yBase=y+h, xL=x, xR=x+w;
+    const pL=applyH(calibration.H,xL,yBase), pR=applyH(calibration.H,xR,yBase);
+    widthM=+Math.hypot(pR.x-pL.x,pR.y-pL.y).toFixed(2);
+  }
+  const feat={areaPx:Math.round(w*h), wPx:Math.round(w), hPx:Math.round(h), aspect:+(Math.max(w,h)/Math.max(1,Math.min(w,h))).toFixed(2), widthM};
+  const pad=1.3, cw=Math.min(stillBase.width,w*pad), ch=Math.min(stillBase.height,h*pad);
+  const cx=x+w/2, cy=y+h/2;
+  const sxp=Math.max(0,Math.min(stillBase.width-cw,cx-cw/2));
+  const syp=Math.max(0,Math.min(stillBase.height-ch,cy-ch/2));
+  const prevC=document.createElement('canvas'); prevC.width=80; prevC.height=Math.max(1,Math.round(80*ch/cw));
+  prevC.getContext('2d').drawImage(stillBase,sxp,syp,cw,ch,0,0,prevC.width,prevC.height);
+  const ex={id:exampleNextId++, label:det.cls, feat, capturedAt:new Date().toISOString(), trackId:null, _preview:prevC.toDataURL('image/jpeg',0.7)};
+  trainingExamples.push(ex);
+  renderExampleList();
+}
 
 /* ══════════════════════════════════════════
    Overlay click dispatcher (calibration / ROI / capture)
