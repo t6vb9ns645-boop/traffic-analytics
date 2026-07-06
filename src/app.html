@@ -21,7 +21,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
 .app-header{
   display:flex;align-items:center;gap:12px;padding:10px 18px;
   border-bottom:1px solid var(--line);background:var(--panel);
-  flex-wrap:wrap;position:relative;z-index:50;flex-shrink:0;
+  flex-wrap:wrap;position:relative;z-index:400;flex-shrink:0;
 }
 .brand{font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;}
 .brand span{color:var(--accent);}
@@ -71,6 +71,8 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
   .step-num{width:22px;height:22px;font-size:10px;}
   .step-conn{width:10px;margin-bottom:0;}
   .status-badge{display:none;}
+  .tools-menu-wrap #btnToolsMenu{padding:6px 8px;font-size:11px;}
+  .tools-menu{min-width:190px;}
   /* Stack video above the menu, but keep the whole app pinned to the
      viewport (no page-level scroll): the video gets a bounded share of
      the height and the menu below it gets the rest as its own
@@ -247,31 +249,40 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 .capture-active #overlay{cursor:pointer;pointer-events:auto!important;}
 .diag-msg.ok{color:var(--ok);}
 
-/* Training examples — always-reachable drawer, independent of wizard step */
-.training-fab{
-  position:fixed;right:16px;bottom:16px;z-index:200;
-  box-shadow:0 4px 14px rgba(0,0,0,.4);background:var(--panel-2);
+/* ── Single tools menu, docked in the header — never floats over page
+   content, so it can't overlap step-foot buttons or drawer content. All
+   three drawers open from this one entry point (mutually exclusive). ── */
+.tools-menu-wrap{position:relative;}
+.tools-menu{
+  position:absolute;top:calc(100% + 6px);right:0;z-index:320;
+  display:flex;flex-direction:column;gap:4px;min-width:220px;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:8px;
+  padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);
+  opacity:0;pointer-events:none;transform:translateY(-4px);
+  transition:opacity .15s ease,transform .15s ease;
 }
+.tools-menu.open{opacity:1;pointer-events:auto;transform:translateY(0);}
+.tools-menu button{background:transparent;border-color:transparent;text-align:left;white-space:nowrap;}
+.tools-menu button:hover{background:var(--panel);border-color:var(--line);}
+.tools-menu button .count{color:var(--accent);font-family:var(--mono);}
+
 .training-drawer{
-  position:fixed;top:0;right:0;height:100dvh;width:340px;max-width:92vw;
+  position:fixed;top:var(--header-h,57px);right:0;
+  height:calc(100dvh - var(--header-h,57px));width:340px;max-width:92vw;
   background:var(--panel);border-left:1px solid var(--line);z-index:300;
   display:flex;flex-direction:column;transform:translateX(100%);
   transition:transform .2s ease;box-shadow:-8px 0 24px rgba(0,0,0,.35);
 }
 .training-drawer.open{transform:translateX(0);}
-.training-fab.fab-left{right:auto;left:16px;}
-.training-drawer.drawer-left{
-  right:auto;left:0;border-left:none;border-right:1px solid var(--line);
-  transform:translateX(-100%);
-}
-.training-drawer.drawer-left.open{transform:translateX(0);}
+.training-drawer.drawer-wide{width:560px;}
 #stillCanvas{width:100%;border:1px solid var(--line);border-radius:6px;background:#000;display:none;}
 
 /* Speed-profile chart drawer */
-.training-drawer.drawer-wide{width:560px;}
 #speedChartCanvas{width:100%;height:280px;border:1px solid var(--line);border-radius:6px;background:#0a0d10;display:block;}
 #speedChartTable{width:100%;border-collapse:collapse;font-size:10.5px;font-family:var(--mono);}
 #speedChartTable th,#speedChartTable td{padding:4px 7px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;}
+.chart-view-toggle{display:flex;gap:6px;}
+.chart-view-toggle button{flex:1;}
 #speedChartTable th:first-child,#speedChartTable td:first-child{text-align:left;}
 #speedChartTable th{color:var(--dim);font-weight:600;text-transform:uppercase;font-size:9.5px;letter-spacing:.05em;}
 .training-drawer-head{
@@ -294,7 +305,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
 <body>
 
 <!-- ══════════ Header + Stepper ══════════ -->
-<header class="app-header">
+<header class="app-header" id="appHeader">
   <div class="brand">Verkehrs<span>analyse</span></div>
 
   <nav class="stepper" id="stepperNav">
@@ -320,6 +331,15 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
   </nav>
 
   <div class="status-badge" id="clock">bereit</div>
+
+  <div class="tools-menu-wrap">
+    <button class="ghost" id="btnToolsMenu">🛠 Werkzeuge</button>
+    <div class="tools-menu" id="toolsMenu">
+      <button id="btnTrainingDrawer">🏷 Trainingsdaten (<span class="count" id="exampleCount">0</span>)</button>
+      <button id="btnStillDrawer">📷 Bild-/Video-Erkennung</button>
+      <button id="btnSpeedChartDrawer">📊 Geschwindigkeitsprofile</button>
+    </div>
+  </div>
 </header>
 
 <!-- ══════════ Main grid ══════════ -->
@@ -623,8 +643,6 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
 
 <footer>Client-seitiger Prototyp · keine Serverkommunikation · JSON-Export direkt API-kompatibel aufgebaut</footer>
 
-<!-- ══════════ Trainingsdaten-Drawer (von jedem Schritt aus erreichbar) ══════════ -->
-<button class="training-fab" id="btnTrainingDrawer">🏷 Beispiele (<span id="exampleCount">0</span>)</button>
 <div class="training-drawer" id="trainingDrawer">
   <div class="training-drawer-head">
     <h2>Trainingsdaten</h2>
@@ -653,8 +671,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
 </div>
 
 <!-- ══════════ Bild-/Video-Erkennung (Fahrzeuge/Personen ohne Bewegung) ══════════ -->
-<button class="training-fab fab-left" id="btnStillDrawer">📷 Bild-/Video-Erkennung</button>
-<div class="training-drawer drawer-left" id="stillDrawer">
+<div class="training-drawer" id="stillDrawer">
   <div class="training-drawer-head">
     <h2>Bild-/Video-Erkennung</h2>
     <button class="ghost" id="btnCloseStillDrawer">✕</button>
@@ -675,14 +692,17 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
 </div>
 
 <!-- ══════════ Geschwindigkeitsprofile je Fahrtrichtung ══════════ -->
-<button class="training-fab" id="btnSpeedChartDrawer" style="bottom:64px;">📊 Geschwindigkeitsprofile</button>
 <div class="training-drawer drawer-wide" id="speedChartDrawer">
   <div class="training-drawer-head">
     <h2>Geschwindigkeitsprofile</h2>
     <button class="ghost" id="btnCloseSpeedChart">✕</button>
   </div>
   <div class="training-drawer-body">
-    <div class="note">Geschwindigkeit über die Zeit seit Ersterkennung, je abgeschlossenem Fahrzeug — nach <b>Fahrtrichtung</b> eingefärbt (dünne Linien je Fahrzeug, dicke Linie = Mittelwert). Erfasst zusätzlich die realen Koordinaten je Zeitpunkt (sobald kalibriert), aus denen sich später ein <b>Bewegungsprofil simulieren</b> lässt — enthalten im bestehenden Trajektorien-Export.</div>
+    <div class="note">Geschwindigkeit und Position, je abgeschlossenem Fahrzeug — nach <b>Fahrtrichtung</b> eingefärbt (dünne Linien je Fahrzeug, dicke Linie = Mittelwert). Erfasst die realen Koordinaten je Zeitpunkt (sobald kalibriert) <b>dreidimensional</b>: Position auf der Fahrbahnebene (X/Y) plus Geschwindigkeit (Z) — Grundlage für eine spätere Bewegungsprofil-Simulation, enthalten im bestehenden Trajektorien-Export.</div>
+    <div class="chart-view-toggle">
+      <button class="module-btn active" id="chartView2D">Zeit · 2D</button>
+      <button class="module-btn" id="chartView3D">Position + Geschwindigkeit · 3D</button>
+    </div>
     <button id="btnRefreshSpeedChart" style="width:100%;">🔄 Aktualisieren</button>
     <canvas id="speedChartCanvas"></canvas>
     <div class="legend" id="speedChartLegend" style="flex-wrap:wrap;"></div>
@@ -775,6 +795,22 @@ const roiStatus    = document.getElementById('roiStatus');
 
 const btnCaptureMode    = document.getElementById('btnCaptureMode');
 const captureStatus     = document.getElementById('captureStatus');
+const btnToolsMenu = document.getElementById('btnToolsMenu');
+const toolsMenu     = document.getElementById('toolsMenu');
+btnToolsMenu.addEventListener('click', () => toolsMenu.classList.toggle('open'));
+document.addEventListener('click', ev => {
+  if(!toolsMenu.classList.contains('open')) return;
+  if(toolsMenu.contains(ev.target) || btnToolsMenu.contains(ev.target)) return;
+  toolsMenu.classList.remove('open');
+});
+// Opens one drawer at a time — closes any other open drawer first so panels
+// can never overlap each other, and closes the tools popover.
+function openToolDrawer(el){
+  document.querySelectorAll('.training-drawer.open').forEach(d => { if(d!==el) d.classList.remove('open'); });
+  el.classList.add('open');
+  toolsMenu.classList.remove('open');
+}
+
 const exampleList       = document.getElementById('exampleList');
 const exampleCount      = document.getElementById('exampleCount');
 const btnExportExamples = document.getElementById('btnExportExamples');
@@ -796,6 +832,8 @@ const speedChartCanvas    = document.getElementById('speedChartCanvas');
 const scctx               = speedChartCanvas.getContext('2d');
 const speedChartLegend    = document.getElementById('speedChartLegend');
 const speedChartTable     = document.getElementById('speedChartTable');
+const chartView2D         = document.getElementById('chartView2D');
+const chartView3D         = document.getElementById('chartView3D');
 
 const btnStillDrawer      = document.getElementById('btnStillDrawer');
 const btnCloseStillDrawer = document.getElementById('btnCloseStillDrawer');
@@ -932,6 +970,16 @@ function sizeOverlay(){
   overlay.height = rect.height;
 }
 window.addEventListener('resize', sizeOverlay);
+
+// Keeps the tool drawers starting exactly below the header (whose height
+// varies with viewport width / stepper wrapping) so neither can ever overlap
+// the other, regardless of screen size.
+const appHeaderEl=document.getElementById('appHeader');
+function syncHeaderHeight(){
+  document.documentElement.style.setProperty('--header-h', appHeaderEl.offsetHeight+'px');
+}
+window.addEventListener('resize', syncHeaderHeight);
+syncHeaderHeight();
 
 function showSource(seekable){
   hasSource = true;
@@ -1325,7 +1373,7 @@ function clearLearningState(){
 }
 
 // Drawer open/close — reachable from any wizard step, not just Live
-btnTrainingDrawer.addEventListener('click', () => trainingDrawer.classList.add('open'));
+btnTrainingDrawer.addEventListener('click', () => openToolDrawer(trainingDrawer));
 btnCloseDrawer.addEventListener('click', () => trainingDrawer.classList.remove('open'));
 
 btnCaptureMode.addEventListener('click', () => {
@@ -1544,7 +1592,7 @@ btnClearExamples.addEventListener('click', () => {
    static photo at all — this uses a pretrained model (COCO-SSD via
    TensorFlow.js, lazy-loaded from a CDN on first use) instead.
 ══════════════════════════════════════════ */
-btnStillDrawer.addEventListener('click', () => stillDrawer.classList.add('open'));
+btnStillDrawer.addEventListener('click', () => openToolDrawer(stillDrawer));
 btnCloseStillDrawer.addEventListener('click', () => stillDrawer.classList.remove('open'));
 
 const stillBase = document.createElement('canvas');
@@ -2618,7 +2666,7 @@ function directionLabel(dirKey){
 }
 
 btnSpeedChartDrawer.addEventListener('click', () => {
-  speedChartDrawer.classList.add('open');
+  openToolDrawer(speedChartDrawer);
   renderSpeedChart();
   if(speedChartAutoTimer) clearInterval(speedChartAutoTimer);
   speedChartAutoTimer=setInterval(renderSpeedChart, 2000);
@@ -2635,7 +2683,21 @@ speedChartCanvas.addEventListener('mousemove', ev => {
 });
 speedChartCanvas.addEventListener('mouseleave', () => { speedChartHoverX=null; renderSpeedChart(); });
 
+let chartMode='2d';
+chartView2D.addEventListener('click', () => {
+  chartMode='2d'; chartView2D.classList.add('active'); chartView3D.classList.remove('active');
+  renderSpeedChart();
+});
+chartView3D.addEventListener('click', () => {
+  chartMode='3d'; chartView3D.classList.add('active'); chartView2D.classList.remove('active');
+  renderSpeedChart();
+});
+
 function renderSpeedChart(){
+  if(chartMode==='3d') renderSpeedChart3D(); else renderSpeedChart2D();
+}
+
+function renderSpeedChart2D(){
   const W=speedChartCanvas.clientWidth||520, H=280;
   const dpr=window.devicePixelRatio||1;
   speedChartCanvas.width=Math.round(W*dpr); speedChartCanvas.height=Math.round(H*dpr);
@@ -2768,6 +2830,147 @@ function renderSpeedChart(){
     const dur=s.points[s.points.length-1].t;
     const unit=useKmh?' km/h':' px/s';
     rows+=`<tr><td>${s.id}</td><td>${directionLabel(s.dir)}</td><td>${avg.toFixed(1)}${unit}</td><td>${max.toFixed(1)}${unit}</td><td>${dur.toFixed(1)}s</td></tr>`;
+  }
+  speedChartTable.innerHTML=rows;
+}
+
+// Isometric 3D profile: ground-plane position (real-world X/Y once
+// calibrated) as the base plane, speed as height (Z) — so the trajectory's
+// shape AND its speed are visible in one view instead of two separate axes.
+// Honest about the limitation: without a calibration there is no real-world
+// ground position at all (monocular scale ambiguity, same as elsewhere in
+// this app), so this view requires one.
+function isoProject(x,y,z){
+  const cos30=Math.cos(Math.PI/6), sin30=Math.sin(Math.PI/6);
+  return { sx:(x-y)*cos30, sy:(x+y)*sin30-z };
+}
+
+function renderSpeedChart3D(){
+  const W=speedChartCanvas.clientWidth||520, H=320;
+  const dpr=window.devicePixelRatio||1;
+  speedChartCanvas.width=Math.round(W*dpr); speedChartCanvas.height=Math.round(H*dpr);
+  scctx.setTransform(dpr,0,0,dpr,0,0);
+  scctx.clearRect(0,0,W,H);
+  scctx.font='9.5px monospace';
+
+  if(!calibration){
+    scctx.fillStyle='#7a8a94';
+    scctx.fillText('3D-Ansicht benötigt eine Kalibrierung (Schritt 3) — ohne sie gibt es keine reale Bodenposition.', 14, H/2);
+    speedChartLegend.innerHTML=''; speedChartTable.innerHTML='';
+    return;
+  }
+
+  const series=[];
+  for(const v of allVehicles){
+    if(!v.history || v.history.length<2) continue;
+    const dir=vehicleDirection(v);
+    if(dir==null) continue;
+    const pts=v.history.filter(p=>p.worldX!=null && p.worldY!=null && p.speedKmh!=null);
+    if(pts.length<2) continue;
+    series.push({dir, id:v.id, points:pts});
+  }
+  if(!series.length){
+    scctx.fillStyle='#7a8a94';
+    scctx.fillText('Noch keine abgeschlossenen, kalibrierten Fahrzeuge mit erkennbarer Richtung.', 14, H/2);
+    speedChartLegend.innerHTML=''; speedChartTable.innerHTML='';
+    return;
+  }
+
+  let maxSpeed=1;
+  for(const s of series) for(const p of s.points) if(p.speedKmh>maxSpeed) maxSpeed=p.speedKmh;
+  const zScale=60/maxSpeed; // px per km/h of "height"
+  const w=calibration.width, len=calibration.length;
+
+  // fit the projected ground rectangle (plus a margin for the tallest speed
+  // spike) into the canvas
+  const corners=[[0,0],[w,0],[w,len],[0,len]].map(([x,y])=>isoProject(x,y,0));
+  const xs=corners.map(c=>c.sx), ys=corners.map(c=>c.sy);
+  const spanX=Math.max(...xs)-Math.min(...xs), spanY=Math.max(...ys)-Math.min(...ys)+zScale*maxSpeed;
+  const scale=Math.min((W-40)/Math.max(spanX,0.01), (H-50)/Math.max(spanY,0.01));
+  const originX=W/2 - (Math.min(...xs)+Math.max(...xs))/2*scale;
+  const originY=H-30 - Math.max(...ys)*scale;
+  // ground grid (the calibrated road rectangle), 1m steps
+  scctx.strokeStyle='rgba(122,138,148,0.35)'; scctx.lineWidth=1;
+  const stepM=Math.max(1,Math.round(Math.min(w,len)/6));
+  for(let gx=0; gx<=w+0.001; gx+=stepM){
+    const a=isoProject(gx,0,0), b=isoProject(gx,len,0);
+    scctx.beginPath();
+    scctx.moveTo(originX+a.sx*scale, originY+a.sy*scale);
+    scctx.lineTo(originX+b.sx*scale, originY+b.sy*scale);
+    scctx.stroke();
+  }
+  for(let gy=0; gy<=len+0.001; gy+=stepM){
+    const a=isoProject(0,gy,0), b=isoProject(w,gy,0);
+    scctx.beginPath();
+    scctx.moveTo(originX+a.sx*scale, originY+a.sy*scale);
+    scctx.lineTo(originX+b.sx*scale, originY+b.sy*scale);
+    scctx.stroke();
+  }
+  scctx.strokeStyle='rgba(122,138,148,0.7)'; scctx.lineWidth=1.5;
+  scctx.beginPath();
+  corners.forEach((c,i)=>{ const x=originX+c.sx*scale, y=originY+c.sy*scale; i===0?scctx.moveTo(x,y):scctx.lineTo(x,y); });
+  scctx.closePath(); scctx.stroke();
+
+  // each vehicle's 3D ribbon: ground track (z=0, faint) + speed profile
+  // (z=speed, in the direction's color) with vertical connectors, so the
+  // "height" reads as speed above the road rather than floating in space
+  for(const s of series){
+    scctx.beginPath();
+    s.points.forEach((p,i)=>{
+      const g=isoProject(p.worldX,p.worldY,0);
+      const x=originX+g.sx*scale, y=originY+g.sy*scale;
+      i===0?scctx.moveTo(x,y):scctx.lineTo(x,y);
+    });
+    scctx.strokeStyle='rgba(122,138,148,0.5)'; scctx.lineWidth=1;
+    scctx.stroke();
+
+    scctx.beginPath();
+    s.points.forEach((p,i)=>{
+      const h=isoProject(p.worldX,p.worldY,p.speedKmh*zScale);
+      const x=originX+h.sx*scale, y=originY+h.sy*scale;
+      i===0?scctx.moveTo(x,y):scctx.lineTo(x,y);
+    });
+    scctx.strokeStyle=DIR_COLORS[s.dir]; scctx.lineWidth=2; scctx.lineJoin='round'; scctx.lineCap='round';
+    scctx.stroke();
+
+    // sparse vertical connectors (every ~4th point) show the speed "height"
+    // without cluttering the view with one per sample
+    scctx.strokeStyle=DIR_COLORS[s.dir]+'40'; scctx.lineWidth=1;
+    s.points.forEach((p,i)=>{
+      if(i%4!==0) return;
+      const g=isoProject(p.worldX,p.worldY,0), h=isoProject(p.worldX,p.worldY,p.speedKmh*zScale);
+      scctx.beginPath();
+      scctx.moveTo(originX+g.sx*scale, originY+g.sy*scale);
+      scctx.lineTo(originX+h.sx*scale, originY+h.sy*scale);
+      scctx.stroke();
+    });
+
+    // one direct label at the end of the ribbon (selective labeling)
+    const last=s.points[s.points.length-1];
+    const h=isoProject(last.worldX,last.worldY,last.speedKmh*zScale);
+    scctx.fillStyle=DIR_COLORS[s.dir]; scctx.font='10px monospace';
+    scctx.fillText(`${last.speedKmh.toFixed(0)}`, originX+h.sx*scale+4, originY+h.sy*scale);
+  }
+
+  scctx.fillStyle='#7a8a94'; scctx.font='9.5px monospace';
+  scctx.fillText(`Fahrbahn ${w}m × ${len}m · Höhe = km/h (Skala ${(1/zScale).toFixed(1)} km/h je px)`, 8, 14);
+
+  const countA=series.filter(s=>s.dir==='A').length, countB=series.filter(s=>s.dir==='B').length;
+  speedChartLegend.innerHTML=`
+    <span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;">
+      <span style="width:10px;height:10px;border-radius:2px;background:${DIR_COLORS.A};display:inline-block;"></span>${directionLabel('A')} (${countA})
+    </span>
+    <span style="display:inline-flex;align-items:center;gap:5px;">
+      <span style="width:10px;height:10px;border-radius:2px;background:${DIR_COLORS.B};display:inline-block;"></span>${directionLabel('B')} (${countB})
+    </span>`;
+
+  let rows='<tr><th>ID</th><th>Richtung</th><th>Ø Geschw.</th><th>Weg (m)</th></tr>';
+  for(const s of series){
+    const speeds=s.points.map(p=>p.speedKmh);
+    const avg=speeds.reduce((a,b)=>a+b,0)/speeds.length;
+    const first=s.points[0], last=s.points[s.points.length-1];
+    const dist=Math.hypot(last.worldX-first.worldX, last.worldY-first.worldY);
+    rows+=`<tr><td>${s.id}</td><td>${directionLabel(s.dir)}</td><td>${avg.toFixed(1)} km/h</td><td>${dist.toFixed(1)} m</td></tr>`;
   }
   speedChartTable.innerHTML=rows;
 }
