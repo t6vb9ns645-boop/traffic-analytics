@@ -436,19 +436,27 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       <h2 class="step-title">Schritt 3 — Straßenprofil &amp; Kalibrierung</h2>
 
       <div class="step-section">
-        <h3>Automatische Fahrbahnerkennung (aus Standbild)</h3>
+        <h3>🤖 Automatische Kalibrierung (empfohlen, keine Eingabe nötig)</h3>
         <select id="widthPreset">
           <option value="3.0">Regelbreite Innerorts / Landstraße ≈ 3,0 m (RSA 21)</option>
           <option value="3.5">Regelbreite Autobahn ≈ 3,5 m (RAA)</option>
         </select>
+        <button id="btnAutoCalibrate" class="primary" style="width:100%;">🤖 Fahrbahn erkennen &amp; automatisch kalibrieren</button>
+        <div class="diag-msg" id="autoCalibStatus">Noch nicht gestartet.</div>
+        <div class="note">Erkennt die Fahrbahn automatisch aus dem aktuellen Bild und kalibriert sofort — <b>ganz ohne manuelle Eingabe</b>. Die Breite kommt aus dem Regelwert oben; die Tiefe (die aus einem Einzelbild grundsätzlich nicht bestimmbar ist) wird anfangs geschätzt und <b>verfeinert sich automatisch</b>, sobald PKW vorbeifahren — bekannte Durchschnittslänge (≈4,5 m) dient dabei als impliziter Maßstab. Je mehr Fahrzeuge beobachtet werden, desto genauer.</div>
+      </div>
+
+      <div class="step-section">
+        <h3>Fahrbahn manuell prüfen (aus Standbild)</h3>
         <button id="btnAnalyzeLanes" style="width:100%;">📸 Fahrbahn aus aktuellem Standbild analysieren</button>
         <div id="laneAnalysisWrap">
           <canvas id="laneCanvas"></canvas>
           <div class="row">
             <span id="laneStatus" class="diag-msg" style="flex:1;"></span>
-            <button id="btnApplyLaneSuggestion" disabled>✓ Vorschlag übernehmen</button>
+            <button id="btnApplyLaneSuggestion" disabled>✓ Vorschlag übernehmen (mit Eingabe)</button>
           </div>
         </div>
+        <div class="note">Wie oben, zeigt aber erst den Vorschlag zur Kontrolle an und fragt beim Übernehmen nach exakter Breite/Tiefe — für Fälle, in denen die automatische Schätzung nicht genau genug ist.</div>
       </div>
 
       <div class="step-section">
@@ -615,7 +623,14 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
     <button class="ghost" id="btnCloseDrawer">✕</button>
   </div>
   <div class="training-drawer-body">
-    <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert oder exportiert</b>. Die Vorschau unten dient nur der Kontrolle in dieser Sitzung und verschwindet beim Neuladen.</div>
+    <div class="step-section" style="padding:10px 12px;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+        <input type="checkbox" id="autoLearnToggle" checked style="accent-color:var(--accent);">
+        🔁 Fortlaufendes Lernen (automatisch, ohne Klicken)
+      </label>
+      <div class="diag-msg" id="autoLearnStatus" style="margin-top:6px;">Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen und verbessert die Klassifizierung laufend im Hintergrund.</div>
+    </div>
+    <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert, exportiert oder in eine Cloud übertragen</b> (keine Gesichter, keine Kennzeichen — die App hat ohnehin keine Serveranbindung). Die Bild-Vorschau unten dient nur der Kontrolle in dieser Sitzung und verschwindet beim Neuladen. Das <b>Zahlen-Profil selbst bleibt erhalten</b>: es wird lokal in diesem Browser gespeichert (localStorage), damit die Objekterkennung nach einem Neuladen nicht wieder von vorne anfängt.</div>
     <div id="exampleList"></div>
     <div class="row">
       <button id="btnLearnFromExamples" style="flex:1;">🧠 Aus Beispielen lernen</button>
@@ -714,6 +729,8 @@ const cTruck  = document.getElementById('cTruck');
 const cPerson = document.getElementById('cPerson');
 const cNoise  = document.getElementById('cNoise');
 
+const btnAutoCalibrate     = document.getElementById('btnAutoCalibrate');
+const autoCalibStatus      = document.getElementById('autoCalibStatus');
 const btnAnalyzeLanes      = document.getElementById('btnAnalyzeLanes');
 const laneAnalysisWrap     = document.getElementById('laneAnalysisWrap');
 const laneCanvas           = document.getElementById('laneCanvas');
@@ -740,6 +757,8 @@ const trainingDrawer    = document.getElementById('trainingDrawer');
 const btnLearnFromExamples = document.getElementById('btnLearnFromExamples');
 const btnResetLearning     = document.getElementById('btnResetLearning');
 const learnStatus          = document.getElementById('learnStatus');
+const autoLearnToggle      = document.getElementById('autoLearnToggle');
+const autoLearnStatus      = document.getElementById('autoLearnStatus');
 
 const btnStillDrawer      = document.getElementById('btnStillDrawer');
 const btnCloseStillDrawer = document.getElementById('btnCloseStillDrawer');
@@ -1224,6 +1243,48 @@ const CLASS_OPTIONS=['Motorrad/Fahrrad','PKW','LKW/Bus','Person','Störung','Son
 let captureMode=false, trainingExamples=[], exampleNextId=1;
 let learnedProfile=null; // {className: {avgWidthM, avgArea, n}} — derived numbers only, no images
 
+/* ══════════════════════════════════════════
+   Local persistence of learning progress — so recognition keeps working
+   across reloads/sessions without needing to re-collect examples every time.
+   ONLY numeric features (label, width/area/aspect) are ever written here,
+   via the browser's own localStorage (on-device, never transmitted anywhere
+   — this app has no backend at all). No image/photo is ever included, so no
+   personally identifiable recording (faces, license plates, ...) is stored
+   or leaves the device, in any form, at any point.
+══════════════════════════════════════════ */
+const LEARNING_STORAGE_KEY='verkehrsanalyse_learning_v1';
+
+function saveLearningState(){
+  try{
+    const payload={
+      learnedProfile,
+      trainingExamples: trainingExamples.map(({id,label,feat,capturedAt,trackId})=>({id,label,feat,capturedAt,trackId})),
+      autoLearnPool,
+      autoLearnRounds,
+      exampleNextId
+    };
+    localStorage.setItem(LEARNING_STORAGE_KEY, JSON.stringify(payload));
+  }catch(e){ /* storage unavailable/full — learning simply won't persist this time, not fatal */ }
+}
+
+function loadLearningState(){
+  try{
+    const raw=localStorage.getItem(LEARNING_STORAGE_KEY);
+    if(!raw) return false;
+    const data=JSON.parse(raw);
+    if(data.learnedProfile) learnedProfile=data.learnedProfile;
+    if(Array.isArray(data.trainingExamples)) trainingExamples=data.trainingExamples.map(ex=>({...ex,_preview:null}));
+    if(Array.isArray(data.autoLearnPool)) autoLearnPool=data.autoLearnPool;
+    if(typeof data.autoLearnRounds==='number') autoLearnRounds=data.autoLearnRounds;
+    if(typeof data.exampleNextId==='number') exampleNextId=data.exampleNextId;
+    return true;
+  }catch(e){ return false; } // corrupted/incompatible data from an older version — ignore, start fresh
+}
+
+function clearLearningState(){
+  try{ localStorage.removeItem(LEARNING_STORAGE_KEY); }catch(e){ /* ignore */ }
+}
+
 // Drawer open/close — reachable from any wizard step, not just Live
 btnTrainingDrawer.addEventListener('click', () => trainingDrawer.classList.add('open'));
 btnCloseDrawer.addEventListener('click', () => trainingDrawer.classList.remove('open'));
@@ -1328,14 +1389,15 @@ function renderExampleList(){
   btnExportExamples.disabled=!has;
   btnClearExamples.disabled=!has;
   exampleCount.textContent=trainingExamples.length;
+  saveLearningState();
 }
 
-// Analyze the collected examples into per-class centroids (mean real-world
-// width when calibrated, mean pixel area otherwise) and use that profile
-// preferentially inside classify() going forward — no images involved.
-function learnFromExamples(){
+// Shared centroid computation (mean real-world width when calibrated, mean
+// pixel area otherwise) over a list of {label, feat} samples — used both by
+// the manual "learn from examples" button and by continuous auto-learning.
+function computeProfileFromSamples(samples){
   const byClass={};
-  for(const ex of trainingExamples){
+  for(const ex of samples){
     const key=ex.label;
     if(!byClass[key]) byClass[key]={widthMs:[],areas:[],n:0};
     if(ex.feat.widthM!=null) byClass[key].widthMs.push(ex.feat.widthM);
@@ -1352,6 +1414,11 @@ function learnFromExamples(){
       n: d.n
     };
   }
+  return {profile, usableClasses};
+}
+
+function learnFromExamples(){
+  const {profile,usableClasses}=computeProfileFromSamples(trainingExamples);
   if(usableClasses<2){
     learnStatus.textContent='Zu wenige Beispiele (mind. 3 pro Klasse, mind. 2 Klassen nötig) — Standard-Heuristik bleibt aktiv.';
     return;
@@ -1359,12 +1426,56 @@ function learnFromExamples(){
   learnedProfile=profile;
   btnResetLearning.disabled=false;
   learnStatus.textContent=`Gelerntes Profil aktiv aus ${trainingExamples.length} Beispiel(en), ${usableClasses} Klasse(n) — wird bei neuen Klassifizierungen bevorzugt genutzt.`;
+  saveLearningState();
 }
 btnLearnFromExamples.addEventListener('click', learnFromExamples);
 btnResetLearning.addEventListener('click', () => {
   learnedProfile=null; btnResetLearning.disabled=true;
   learnStatus.textContent='Gelerntes Profil zurückgesetzt — Standard-Heuristik ist wieder aktiv.';
+  saveLearningState();
 });
+
+/* ══════════════════════════════════════════
+   Continuous auto-learning — no manual capture or button click needed.
+   While the analysis runs, confidently-classified vehicles (measured via
+   calibrated real-world width, clear of any class boundary — never via the
+   currently-learned profile itself, to avoid a self-reinforcing feedback
+   loop) are quietly added to a background pool. The learned profile is
+   re-derived every few samples, so detection keeps improving on its own the
+   longer the camera runs.
+══════════════════════════════════════════ */
+let autoLearnEnabled=true, autoLearnPool=[], autoLearnRounds=0;
+const AUTO_LEARN_BATCH=8, AUTO_LEARN_POOL_CAP=300;
+const CLASS_WIDTH_BOUNDARY_M=[1.0,1.1,2.2], CLASS_BOUNDARY_MARGIN_M=0.12;
+
+autoLearnToggle.addEventListener('change', () => {
+  autoLearnEnabled=autoLearnToggle.checked;
+  autoLearnStatus.textContent = autoLearnEnabled
+    ? 'Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen und verbessert die Klassifizierung laufend im Hintergrund.'
+    : 'Fortlaufendes Lernen pausiert — bereits gelerntes Profil bleibt aktiv, es werden aber keine neuen automatischen Beispiele mehr gesammelt.';
+});
+
+function collectAutoLearnSample(t){
+  if(!autoLearnEnabled || !calibration) return; // width-based ground truth needs a real-world scale
+  const wm=measureCalibratedWidthM({cx:t.x, cy:t.y, w:t.w, h:t.h});
+  if(!isFinite(wm) || wm<=0) return;
+  if(CLASS_WIDTH_BOUNDARY_M.some(b=>Math.abs(wm-b)<CLASS_BOUNDARY_MARGIN_M)) return; // too ambiguous, skip
+  const label=staticClassifyByWidth(t.h>t.w*1.5, wm);
+  autoLearnPool.push({label, feat:{widthM:+wm.toFixed(2), areaPx:Math.round(t.area||0)}});
+  if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
+  if(autoLearnPool.length%AUTO_LEARN_BATCH===0) refineAutoLearnedProfile();
+}
+
+function refineAutoLearnedProfile(){
+  const combined=[...trainingExamples, ...autoLearnPool];
+  const {profile,usableClasses}=computeProfileFromSamples(combined);
+  if(usableClasses<2) return;
+  learnedProfile=profile;
+  autoLearnRounds++;
+  btnResetLearning.disabled=false;
+  learnStatus.textContent=`Fortlaufendes Lernen aktiv: ${autoLearnRounds}. Verfeinerung aus ${autoLearnPool.length} automatisch beobachteten + ${trainingExamples.length} manuellen Beispiel(en), ${usableClasses} Klasse(n).`;
+  saveLearningState();
+}
 
 btnExportExamples.addEventListener('click', () => {
   const payload={
@@ -1380,8 +1491,12 @@ btnExportExamples.addEventListener('click', () => {
   a.click();
 });
 btnClearExamples.addEventListener('click', () => {
-  if(!confirm('Alle gesammelten Beispiele löschen?')) return;
-  trainingExamples=[]; renderExampleList();
+  if(!confirm('Alle gesammelten Beispiele, das automatisch gesammelte Profil und den gespeicherten Lernfortschritt in diesem Browser löschen?')) return;
+  trainingExamples=[]; autoLearnPool=[]; autoLearnRounds=0; learnedProfile=null;
+  btnResetLearning.disabled=true;
+  learnStatus.textContent='Gelerntes Profil zurückgesetzt — Standard-Heuristik ist wieder aktiv.';
+  clearLearningState();
+  renderExampleList();
 });
 
 /* ══════════════════════════════════════════
@@ -1599,8 +1714,14 @@ let laneSuggestion=null;
 
 horizonSlider.addEventListener('input', () => horizonVal.textContent=horizonSlider.value+'%');
 
-btnAnalyzeLanes.addEventListener('click', () => {
-  if(!hasSource||video.videoWidth===0){ alert('Bitte zuerst eine Videoquelle laden.'); return; }
+// Shared core: detects the road trapezoid in the current frame (Sobel/marking
+// edges + Hough lines, restricted to the ROI polygon or horizon fallback) and
+// draws the result to laneCanvas for visual feedback. Returns the native-pixel
+// quad on success, or null (with a human-readable reason in .reason) on
+// failure. Used both by the manual "review first" flow and by fully automatic
+// calibration.
+function detectLaneQuad(){
+  if(!hasSource||video.videoWidth===0) return {reason:'Bitte zuerst eine Videoquelle laden.'};
   const LW=320, LH=Math.round(320*video.videoHeight/video.videoWidth);
   laneCanvas.width=LW; laneCanvas.height=LH;
   lctx.drawImage(video,0,0,LW,LH);
@@ -1608,8 +1729,7 @@ btnAnalyzeLanes.addEventListener('click', () => {
   try{ imgData=lctx.getImageData(0,0,LW,LH); }
   catch(e){
     laneAnalysisWrap.classList.add('visible');
-    laneStatus.textContent='Analyse blockiert (CORS). Webcam oder lokale Datei verwenden.';
-    return;
+    return {reason:'Analyse blockiert (CORS). Webcam oder lokale Datei verwenden.'};
   }
   laneAnalysisWrap.classList.add('visible');
   const data=imgData.data;
@@ -1656,13 +1776,11 @@ btnAnalyzeLanes.addEventListener('click', () => {
   lctx.fillStyle='rgba(40,224,197,0.55)';
   for(const [x,y] of candidatePoints) lctx.fillRect(x,y,1,1);
   if(candidatePoints.length<30){
-    laneStatus.textContent=`Zu wenige Kandidatenpunkte (${candidatePoints.length}). ${roiLane?'Analysebereich vergrößern':'Horizont-Slider anpassen'} oder „nur Markierungen“ umschalten.`;
-    btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
+    return {reason:`Zu wenige Kandidatenpunkte (${candidatePoints.length}). ${roiLane?'Analysebereich vergrößern':'Horizont-Slider anpassen'} oder „nur Markierungen“ umschalten.`};
   }
   const lines=houghLines(candidatePoints,LW,LH,10);
   if(lines.length<2){
-    laneStatus.textContent=`Nur ${lines.length} Linie(n) gefunden — mind. 2 nötig. Manuell kalibrieren.`;
-    btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
+    return {reason:`Nur ${lines.length} Linie(n) gefunden — mind. 2 nötig. Manuell kalibrieren.`};
   }
   const regionYs = roiLane ? roiLane.map(p=>p.y) : null;
   const drawTopY  = roiLane ? Math.min(...regionYs) : horizonY;
@@ -1690,8 +1808,7 @@ btnAnalyzeLanes.addEventListener('click', () => {
       if(!best||score>best.score) best={left,right,ns,fs,score};
     }
   if(!best){
-    laneStatus.textContent=`${lines.length} Linien, aber kein plausibles Fahrbahnpaar. Horizont-Grenze anpassen oder manuell kalibrieren.`;
-    btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
+    return {reason:`${lines.length} Linien, aber kein plausibles Fahrbahnpaar. Horizont-Grenze anpassen oder manuell kalibrieren.`};
   }
   const quad=[
     {x:best.left.far,y:farY},{x:best.right.far,y:farY},
@@ -1704,9 +1821,18 @@ btnAnalyzeLanes.addEventListener('click', () => {
   quad.forEach(p=>{lctx.fillStyle='#28e0c5';lctx.beginPath();lctx.arc(p.x,p.y,4,0,Math.PI*2);lctx.fill();});
   const sx=video.videoWidth/LW, sy=video.videoHeight/LH;
   const nativePts=quad.map(p=>({x:p.x*sx,y:p.y*sy}));
-  laneSuggestion={nativePoints:nativePts};
+  return { nativePoints:nativePts, candidateCount:candidatePoints.length, lineCount:lines.length };
+}
+
+btnAnalyzeLanes.addEventListener('click', () => {
+  const res=detectLaneQuad();
+  if(!res || !res.nativePoints){
+    laneStatus.textContent = res?.reason || 'Videoquelle fehlt.';
+    btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
+  }
+  laneSuggestion={nativePoints:res.nativePoints};
   btnApplyLaneSuggestion.disabled=false;
-  laneStatus.textContent=`Vorschlag: ${candidatePoints.length} Kandidatenpunkte, ${lines.length} Linien erkannt — bitte Viereck prüfen, dann übernehmen.`;
+  laneStatus.textContent=`Vorschlag: ${res.candidateCount} Kandidatenpunkte, ${res.lineCount} Linien erkannt — bitte Viereck prüfen, dann übernehmen.`;
 });
 
 btnApplyLaneSuggestion.addEventListener('click', () => {
@@ -1716,6 +1842,74 @@ btnApplyLaneSuggestion.addEventListener('click', () => {
   const lIn=window.prompt('Reale Tiefe in Metern (zwischen den beiden Bildzeilen — bitte messen):','10');
   const length=parseFloat((lIn||'').replace(',','.'));
   applyCalibrationFromPoints(laneSuggestion.nativePoints,width,length);
+});
+
+/* ══════════════════════════════════════════
+   Fully automatic calibration — no manual input
+   Width comes from the regulatory preset. Depth/length cannot be recovered
+   from a single image at all (fundamental monocular scale ambiguity), so it
+   starts from a rough placeholder and self-corrects: once real "PKW" tracks
+   are observed, their known average real-world length (~4.5 m) is used as an
+   implicit reference to refine the depth scale — the more vehicles pass, the
+   more accurate it gets.
+══════════════════════════════════════════ */
+const REF_VEHICLE_LENGTH_M = { 'PKW': 4.5 };
+let autoCalibActive=false, autoCalibSamples=[], autoCalibRefinements=0;
+
+function estimateWorldLength(t){
+  // vehicle extent along the calibrated depth axis (bbox height, projected
+  // through the current homography) — same idea as the width calc in
+  // classify(), just the other axis.
+  const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
+  const scaleX=vw/PW, scaleY=vh/PH;
+  const yTop=t.y-(t.h||0)/2, yBot=t.y+(t.h||0)/2;
+  const pTop=applyH(calibration.H, t.x*scaleX, yTop*scaleY);
+  const pBot=applyH(calibration.H, t.x*scaleX, yBot*scaleY);
+  return Math.hypot(pBot.x-pTop.x, pBot.y-pTop.y);
+}
+
+// Called from updateTracks() whenever a track is newly confirmed.
+function collectAutoCalibSample(t){
+  if(!autoCalibActive || !calibration || t.cls!=='PKW') return;
+  const est=estimateWorldLength(t);
+  if(!isFinite(est) || est<=0.2) return; // discard degenerate/near-zero geometry
+  autoCalibSamples.push(est);
+  if(autoCalibSamples.length>=3){
+    const avg=autoCalibSamples.reduce((s,x)=>s+x,0)/autoCalibSamples.length;
+    const ref=REF_VEHICLE_LENGTH_M['PKW'];
+    const rawCorrection=ref/avg;
+    // dampen so a handful of noisy samples can't swing the scale wildly;
+    // converges over several refinement rounds instead of jumping in one step
+    const correction=1+(rawCorrection-1)*0.5;
+    const newLength=calibration.length*correction;
+    const pts=calibration.nativePoints, width=calibration.width;
+    autoCalibSamples=[];
+    autoCalibRefinements++;
+    applyCalibrationFromPoints(pts, width, +newLength.toFixed(2));
+    const stable=Math.abs(correction-1)<0.03;
+    autoCalibStatus.textContent = stable
+      ? `Automatisch kalibriert und stabil (${autoCalibRefinements}. Verfeinerung, Tiefe ≈ ${newLength.toFixed(1)} m).`
+      : `Automatisch kalibriert — wird weiter verfeinert (${autoCalibRefinements}. Verfeinerung, Tiefe ≈ ${newLength.toFixed(1)} m).`;
+  }
+}
+
+btnAutoCalibrate.addEventListener('click', () => {
+  const res=detectLaneQuad();
+  if(!res || !res.nativePoints){
+    autoCalibStatus.textContent=(res?.reason || 'Videoquelle fehlt.')+' Manuelle Kalibrierung verwenden.';
+    return;
+  }
+  const width=parseFloat(widthPreset.value);
+  // arbitrary starting depth guess (same order of magnitude as the width) —
+  // purely a seed value for the homography; collectAutoCalibSample() corrects
+  // it automatically as soon as real vehicles are observed.
+  const initialLengthGuess=width*2;
+  if(applyCalibrationFromPoints(res.nativePoints, width, initialLengthGuess)){
+    autoCalibActive=true; autoCalibSamples=[]; autoCalibRefinements=0;
+    autoCalibStatus.textContent=`Vorläufig kalibriert (Breite ${width} m, Tiefe geschätzt) — wird automatisch genauer, sobald PKW vorbeifahren.`;
+  } else {
+    autoCalibStatus.textContent='Kalibrierung fehlgeschlagen (Punkte kollinear?). Manuell kalibrieren.';
+  }
 });
 
 /* ══════════════════════════════════════════
@@ -1848,25 +2042,39 @@ function dilate(mask,w,h){
 const classColor={'Motorrad/Fahrrad':'#c084fc','PKW':'#28e0c5','LKW/Bus':'#ffb020','Person':'#4ade80','Störung':'#5a6570'};
 const CONFIRM_FRAMES=3;
 
+// Real-world width (meters) of a blob's ground-contact edge via the
+// perspective homography — only valid once calibrated. Shared by classify()
+// and the continuous auto-learning ground-truth signal below.
+function measureCalibratedWidthM(blob){
+  const {w,h,cx,cy}=blob;
+  const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
+  const scaleX=vw/PW, scaleY=vh/PH;
+  const yBase=cy+h/2, xL=cx-w/2, xR=cx+w/2;
+  const pL=applyH(calibration.H,xL*scaleX,yBase*scaleY);
+  const pR=applyH(calibration.H,xR*scaleX,yBase*scaleY);
+  return Math.hypot(pR.x-pL.x,pR.y-pL.y);
+}
+// The fixed, documented width bands (never affected by the learned profile)
+// — this is the physically-grounded classifier used both as the final
+// fallback and as the pseudo-label source for auto-learning.
+function staticClassifyByWidth(tall, wm){
+  if(tall&&wm<1.0) return 'Person';
+  if(wm<1.1) return 'Motorrad/Fahrrad';
+  if(wm<2.2) return 'PKW';
+  return 'LKW/Bus';
+}
+
 function classify(blob){
-  const {area,w,h,cx,cy}=blob;
+  const {area,h,w}=blob;
   const minA=parseInt(minAreaSlider.value,10);
   const tall=h>w*1.5;
   if(calibration){
-    const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
-    const scaleX=vw/PW, scaleY=vh/PH;
-    const yBase=cy+h/2, xL=cx-w/2, xR=cx+w/2;
-    const pL=applyH(calibration.H,xL*scaleX,yBase*scaleY);
-    const pR=applyH(calibration.H,xR*scaleX,yBase*scaleY);
-    const wm=Math.hypot(pR.x-pL.x,pR.y-pL.y);
+    const wm=measureCalibratedWidthM(blob);
     if(learnedProfile){
       const cls=nearestLearnedClass(learnedProfile, c => c.avgWidthM, wm);
       if(cls) return cls;
     }
-    if(tall&&wm<1.0) return 'Person';
-    if(wm<1.1) return 'Motorrad/Fahrrad';
-    if(wm<2.2) return 'PKW';
-    return 'LKW/Bus';
+    return staticClassifyByWidth(tall, wm);
   }
   if(learnedProfile){
     const cls=nearestLearnedClass(learnedProfile, c => c.avgArea, area);
@@ -2059,7 +2267,7 @@ function updateTracks(blobs){
       if(looksLikeGlassArtifact(t)){if(!t.isArtifact)noiseCount++;t.cls='Störung';t.isArtifact=true;}
       else t.isArtifact=false;
       t.streak=(t.streak||1)+1;
-      if(!t.confirmed&&!t.isArtifact&&t.streak>=CONFIRM_FRAMES){t.confirmed=true;allVehicles.push(t);}
+      if(!t.confirmed&&!t.isArtifact&&t.streak>=CONFIRM_FRAMES){t.confirmed=true;allVehicles.push(t);collectAutoCalibSample(t);collectAutoLearnSample(t);}
       if(t.confirmed){
         const gx=Math.min(PW-1,Math.max(0,Math.round(t.x)));
         const gy=Math.min(PH-1,Math.max(0,Math.round(t.y)));
@@ -2246,6 +2454,18 @@ video.addEventListener('loadedmetadata', sizeOverlay);
 // Init
 updateCalibSummary();
 refreshStepper();
+
+// Restore learning progress from this browser's local storage, if any —
+// recognition keeps working across reloads without ever having sent or kept
+// any image anywhere (only the numeric feature profile is persisted).
+if(loadLearningState()){
+  renderExampleList();
+  if(learnedProfile){
+    btnResetLearning.disabled=false;
+    const usableClasses=Object.keys(learnedProfile).length;
+    learnStatus.textContent=`Gelerntes Profil aus vorheriger Sitzung geladen (${usableClasses} Klasse(n), ${autoLearnRounds} automatische Verfeinerung(en) bisher) — lokal in diesem Browser gespeichert, nie hochgeladen.`;
+  }
+}
 })();
 </script>
 </body>
