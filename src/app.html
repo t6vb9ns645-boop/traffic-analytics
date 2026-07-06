@@ -8,7 +8,7 @@
 :root{
   --bg:#0a0d10; --panel:#12171c; --panel-2:#181f26; --line:#232c33;
   --text:#dbe4e9; --dim:#7a8a94; --accent:#28e0c5; --accent-2:#ffb020;
-  --danger:#ff5d5d; --ok:#4ade80;
+  --danger:#ff5d5d; --ok:#4ade80; --video-max-w:100%;
   --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 }
@@ -112,6 +112,10 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
      force the whole column to scroll. object-fit:contain on the video/
      canvas below still preserves the real aspect ratio inside this box. */
   flex:1 1 auto;min-height:140px;
+  /* Manual size control (--video-max-w, set via the "Bildgröße" slider in
+     Step 2) caps the width so the image can be shrunk on request, on top
+     of the automatic viewport-fit above. */
+  max-width:var(--video-max-w,100%);margin:0 auto;
 }
 .video-wrap video,.video-wrap canvas{
   position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;
@@ -426,11 +430,20 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       <div class="step-section">
         <h3>Kamera</h3>
         <select id="cameraSelect"><option>Kameras werden gesucht …</option></select>
+        <select id="resolutionSelect">
+          <option value="">Auflösung: Automatisch</option>
+          <option value="320x240">320×240</option>
+          <option value="640x480" selected>640×480</option>
+          <option value="1280x720">1280×720 (HD)</option>
+          <option value="1920x1080">1920×1080 (Full HD)</option>
+          <option value="3840x2160">3840×2160 (4K)</option>
+        </select>
         <div class="row">
           <button id="btnRequestPermission" style="flex:1;">🔓 Zugriff anfragen / Liste aktualisieren</button>
           <button id="btnWebcam">📷 Starten</button>
         </div>
         <div class="diag-msg" id="cameraDiag">Kamerastatus: noch nicht geprüft</div>
+        <div class="note" id="resolutionNote">Tatsächlich unterstützte Auflösung hängt von der Kamera ab — der Browser wählt die nächstmögliche verfügbare. Nach dem Start wird die tatsächlich aktive Auflösung oben angezeigt.</div>
       </div>
 
       <div class="step-section">
@@ -456,6 +469,15 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
     <!-- ─── Step 2: Einstellungen ─── -->
     <div class="step-panel" id="panel-2">
       <h2 class="step-title">Schritt 2 — Kameraeinstellungen</h2>
+
+      <div class="step-section">
+        <h3>Bildgröße (Anzeige)</h3>
+        <div class="slider-row">
+          <div class="slider-lbl"><span>Größe des Videobilds</span><span id="videoSizeVal">100%</span></div>
+          <input type="range" id="videoSizeSlider" min="30" max="100" value="100">
+        </div>
+        <div class="note">Verkleinert nur die Anzeige (nicht die Aufnahmeauflösung) — nützlich bei kleinen Fenstern oder um mehr Platz für die Seitenleiste zu schaffen. Passt sich zusätzlich automatisch an den verfügbaren Platz an.</div>
+      </div>
 
       <div class="step-section">
         <h3>Bewegungserkennung</h3>
@@ -506,6 +528,12 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
     <!-- ─── Step 3: Kalibrierung ─── -->
     <div class="step-panel" id="panel-3">
       <h2 class="step-title">Schritt 3 — Straßenprofil &amp; Kalibrierung</h2>
+
+      <div class="step-section">
+        <h3>🗺 Kartenreferenz (unabhängige Zusatzmessung)</h3>
+        <button id="btnOpenMapRefStandalone" style="width:100%;">🗺 Auf Karte messen</button>
+        <div class="note">Miss unabhängig von den Kalibrierungsschritten unten eine reale Strecke auf einer <b>OpenStreetMap</b>-Karte (z. B. die sichtbare Fahrbahnbreite). Die Messung bleibt erhalten und lässt sich weiter unten bei der Tiefenerfassung direkt als Breite/Tiefe übernehmen.</div>
+      </div>
 
       <div class="step-section">
         <h3>🤖 Automatische Kalibrierung (empfohlen, keine Eingabe nötig)</h3>
@@ -836,6 +864,8 @@ const emptyHint  = document.getElementById('emptyHint');
 const clockEl    = document.getElementById('clock');
 
 const cameraSelect        = document.getElementById('cameraSelect');
+const resolutionSelect    = document.getElementById('resolutionSelect');
+const resolutionNote      = document.getElementById('resolutionNote');
 const btnRequestPermission= document.getElementById('btnRequestPermission');
 const btnWebcam           = document.getElementById('btnWebcam');
 const fileInput           = document.getElementById('fileInput');
@@ -866,6 +896,7 @@ const btnDepthSuggest   = document.getElementById('btnDepthSuggest');
 const btnDepthApply     = document.getElementById('btnDepthApply');
 const btnDepthCancel    = document.getElementById('btnDepthCancel');
 const btnOpenMapRef     = document.getElementById('btnOpenMapRef');
+const btnOpenMapRefStandalone = document.getElementById('btnOpenMapRefStandalone');
 const btnCloseMapRef    = document.getElementById('btnCloseMapRef');
 const mapRefDrawer      = document.getElementById('mapRefDrawer');
 const mapRefContainer   = document.getElementById('mapRefContainer');
@@ -884,6 +915,8 @@ const diagStrip  = document.getElementById('diagStrip');
 const debugMask  = document.getElementById('debugMask');
 const dctx       = debugMask.getContext('2d');
 
+const videoSizeSlider  = document.getElementById('videoSizeSlider');
+const videoSizeVal     = document.getElementById('videoSizeVal');
 const sensSlider       = document.getElementById('sensSlider');
 const sensVal          = document.getElementById('sensVal');
 const minAreaSlider    = document.getElementById('minAreaSlider');
@@ -1224,21 +1257,30 @@ refreshCameraList();
 if(navigator.mediaDevices?.addEventListener)
   navigator.mediaDevices.addEventListener('devicechange', refreshCameraList);
 
+function parseResolution(val){
+  if(!val) return null;
+  const [w,h] = val.split('x').map(Number);
+  return (w>0 && h>0) ? {width:w, height:h} : null;
+}
 async function startWebcam(deviceId){
   try{
     if(currentStream){ currentStream.getTracks().forEach(t=>t.stop()); currentStream=null; }
-    const constraints = {
-      video: deviceId ? {deviceId:{exact:deviceId},width:640,height:480} : {width:640,height:480},
-      audio: false
+    const res = parseResolution(resolutionSelect.value) || {width:640, height:480};
+    // "ideal" (not "exact") — the browser picks the closest resolution the
+    // camera actually supports instead of throwing OverconstrainedError when
+    // the exact value isn't available.
+    const videoConstraints = {
+      width:{ideal:res.width}, height:{ideal:res.height},
+      ...(deviceId ? {deviceId:{exact:deviceId}} : {})
     };
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    const stream = await navigator.mediaDevices.getUserMedia({video:videoConstraints, audio:false});
     currentStream = stream;
     video.srcObject = stream; video.src = ''; video.crossOrigin = null;
     await video.play();
     corsBlocked = false;
     showSource(false);
     setClock('Kamera aktiv');
-    diag('Kamera aktiv.');
+    reportActiveResolution(stream);
     refreshCameraList();
   }catch(e){
     let h = e.name==='NotAllowedError' ? ' Zugriff verweigert oder eingebettete Vorschau.' : '';
@@ -1248,8 +1290,23 @@ async function startWebcam(deviceId){
   }
 }
 
+function reportActiveResolution(stream){
+  const track = stream.getVideoTracks()[0];
+  const settings = track.getSettings?.() || {};
+  const w = settings.width || video.videoWidth, h = settings.height || video.videoHeight;
+  let msg = w && h ? `Kamera aktiv (${w}×${h}).` : 'Kamera aktiv.';
+  const caps = track.getCapabilities?.();
+  if(caps?.width && caps?.height){
+    resolutionNote.textContent = `Diese Kamera unterstützt ca. ${caps.width.min}×${caps.height.min} bis ${caps.width.max}×${caps.height.max}. Aktuell aktiv: ${w}×${h}.`;
+  } else {
+    resolutionNote.textContent = `Aktuell aktiv: ${w}×${h}. Unterstützter Auflösungsbereich wird vom Browser für diese Kamera nicht gemeldet — Auswahl bleibt ein Best-Effort-Wunsch ("ideal").`;
+  }
+  diag(msg);
+}
+
 btnWebcam.addEventListener('click', () => startWebcam(cameraSelect.value));
 cameraSelect.addEventListener('change', () => { if(currentStream) startWebcam(cameraSelect.value); });
+resolutionSelect.addEventListener('change', () => { if(currentStream) startWebcam(cameraSelect.value); });
 
 fileInput.addEventListener('change', () => {
   const file = fileInput.files[0]; if(!file) return;
@@ -1468,7 +1525,7 @@ function onMapRefClick(ev){
     btnMapRefToLength.dataset.value=dist.toFixed(1);
   }
 }
-btnOpenMapRef.addEventListener('click', async () => {
+async function openMapRefDrawer(){
   openToolDrawer(mapRefDrawer);
   try{
     const map=await ensureMapRef();
@@ -1477,7 +1534,13 @@ btnOpenMapRef.addEventListener('click', async () => {
     mapRefStatus.textContent='Karte konnte nicht geladen werden (kein Internetzugriff oder CDN blockiert). Selbstkalibrierung/manuelle Eingabe weiterhin möglich.';
     mapRefInstance=null; // allow retry on next open
   }
-});
+}
+// Reachable two ways: standalone at the top of Step 3 (visible immediately,
+// independent of any calibration flow) and from inside the depth-capture
+// form (contextual, once 4-point/lane calibration is underway) — measured
+// points persist across both since mapRefPoints isn't reset on reopen.
+btnOpenMapRef.addEventListener('click', openMapRefDrawer);
+btnOpenMapRefStandalone.addEventListener('click', openMapRefDrawer);
 btnCloseMapRef.addEventListener('click', () => mapRefDrawer.classList.remove('open'));
 btnMapRefReset.addEventListener('click', () => {
   mapRefPoints=[]; mapRefMarkers.forEach(m=>mapRefInstance.removeLayer(m)); mapRefMarkers=[];
@@ -2492,6 +2555,10 @@ function setView(v){
 [viewLive,viewDensity,viewFlow,viewSpeed].forEach(b =>
   b.addEventListener('click', () => setView(b.dataset.view))
 );
+videoSizeSlider.addEventListener('input', () => {
+  videoSizeVal.textContent = videoSizeSlider.value+'%';
+  document.documentElement.style.setProperty('--video-max-w', videoSizeSlider.value+'%');
+});
 sensSlider.addEventListener('input',   () => sensVal.textContent   = sensSlider.value);
 minAreaSlider.addEventListener('input',() => minAreaVal.textContent= minAreaSlider.value);
 
