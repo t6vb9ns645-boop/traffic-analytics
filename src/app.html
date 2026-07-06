@@ -843,7 +843,12 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
         <button id="btnCaptureMode" style="width:100%;">🏷 Beispiel-Modus: Aus</button>
         <div class="diag-msg" id="captureStatus">Aktivieren, dann im Video auf ein erkanntes Objekt klicken, um es zu erfassen.</div>
         <button id="btnManualCaptureMode" style="width:100%;">📍 Manuell erfassen: Aus</button>
-        <div class="diag-msg" id="manualCaptureStatus">Aktivieren, dann an beliebiger Stelle im Video klicken — erfasst einen Bildausschnitt als unklassifiziertes Beispiel (zur Sichtprüfung, auch über der Warteschlangen-Grenze).</div>
+        <select id="manualCaptureClassSelect">
+          <option value="">Später klassifizieren (Sichtprüfung)</option>
+        </select>
+        <div class="diag-msg" id="manualCaptureStatus">Aktivieren, dann an beliebiger Stelle im Video klicken — erfasst einen Bildausschnitt als Beispiel (zur Sichtprüfung, auch über der Warteschlangen-Grenze). Trifft der Klick ein bereits erkanntes Objekt, wird es weiter verfolgt. Optional oben direkt klassifizieren, statt erst später in der Sichtprüfung.</div>
+        <button id="btnDeselectMode" style="width:100%;">❌ Objekt abwählen: Aus</button>
+        <div class="diag-msg" id="deselectStatus">Aktivieren, dann auf ein fälschlich erkanntes Objekt klicken — wird sofort als Störung gewertet und fließt weiterhin in die Ermittlung ein, statt einfach verworfen zu werden.</div>
       </div>
     </div>
 
@@ -953,6 +958,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
         <select id="reviewClassSelect"></select>
       </div>
       <button id="btnReviewAccept" class="primary" style="width:100%;">✓ Annehmen</button>
+      <button id="btnReviewFalsePositive" style="width:100%;">❌ Kein Objekt (falsch erkannt)</button>
       <button id="btnReviewReject" class="ghost" style="width:100%;">✕ Ablehnen</button>
     </div>
   </div>
@@ -1144,6 +1150,9 @@ const roiStatus    = document.getElementById('roiStatus');
 
 const btnCaptureMode    = document.getElementById('btnCaptureMode');
 const btnManualCaptureMode  = document.getElementById('btnManualCaptureMode');
+const manualCaptureClassSelect = document.getElementById('manualCaptureClassSelect');
+const btnDeselectMode      = document.getElementById('btnDeselectMode');
+const deselectStatus       = document.getElementById('deselectStatus');
 const manualCaptureStatus   = document.getElementById('manualCaptureStatus');
 const btnCalibAdjustMode    = document.getElementById('btnCalibAdjustMode');
 const calibAdjustList       = document.getElementById('calibAdjustList');
@@ -1187,6 +1196,7 @@ const reviewCurrentImg     = document.getElementById('reviewCurrentImg');
 const reviewCurrentMeta    = document.getElementById('reviewCurrentMeta');
 const reviewClassSelect    = document.getElementById('reviewClassSelect');
 const btnReviewAccept      = document.getElementById('btnReviewAccept');
+const btnReviewFalsePositive = document.getElementById('btnReviewFalsePositive');
 const btnReviewReject      = document.getElementById('btnReviewReject');
 const btnLearnFromExamples = document.getElementById('btnLearnFromExamples');
 const btnResetLearning     = document.getElementById('btnResetLearning');
@@ -1373,6 +1383,12 @@ function updateProcessingResolution(){
   allocateProcessingBuffers();
   bg=null; frameCount=0; // background model and grids are tied to the old buffer size
   rescaleCalibrationIfNeeded();
+  rescaleCalibAdjustPointsIfNeeded();
+  // Also keep an in-progress multi-point calibration draft (video snapshot +
+  // already-placed points) in sync if the resolution changes while that
+  // panel has been used this session — otherwise points placed before the
+  // change silently end up wrong once the canvas is next refreshed.
+  if(mpcalibVideoCanvas.width) refreshMpcalibVideoFrame();
 }
 
 /* ══════════════════════════════════════════
@@ -1970,18 +1986,31 @@ btnManualRefSave.addEventListener('click', () => {
 let mpCalibPoints=[], mpCalibCounter=0;
 let mpCalibArmed=null; // {pointId, side:'video'|'map'}
 let mpCalibMapInstance=null, mpCalibTileLayer=null, mpCalibMarkers={};
+let mpCalibBaseRes=null; // {w,h} — video resolution the current canvas/videoPt coords are relative to
 
 function mpCalibNextLabel(){
   let n=mpCalibCounter+1, s='';
   while(n>0){ n--; s=String.fromCharCode(65+(n%26))+s; n=Math.floor(n/26); }
   return s;
 }
+// Re-scaling to a DIFFERENT resolution than points were captured at is
+// exactly what produced the mismatch: a point's raw pixel numbers only mean
+// the same real position at the resolution they were placed at. Whenever
+// the canvas is (re)established at a new size, existing points are first
+// migrated proportionally so they keep pointing at the same real spot.
 function refreshMpcalibVideoFrame(){
   const vw=video.videoWidth, vh=video.videoHeight;
   if(!vw||!vh) return;
+  if(mpCalibBaseRes && (mpCalibBaseRes.w!==vw || mpCalibBaseRes.h!==vh) && mpCalibPoints.length){
+    const sx=vw/mpCalibBaseRes.w, sy=vh/mpCalibBaseRes.h;
+    mpCalibPoints.forEach(p => { if(p.videoPt) p.videoPt={x:p.videoPt.x*sx, y:p.videoPt.y*sy}; });
+    mpcalibStatus.textContent='Auflösung geändert — bereits gesetzte Video-Punkte automatisch mitskaliert.';
+  }
+  mpCalibBaseRes={w:vw, h:vh};
   mpcalibVideoCanvas.width=vw; mpcalibVideoCanvas.height=vh;
   mpcalibVctx.drawImage(video,0,0,vw,vh);
   redrawMpcalibVideoPoints();
+  renderMpcalibPointList();
 }
 function redrawMpcalibVideoPoints(){
   if(!mpcalibVideoCanvas.width) return;
@@ -2224,15 +2253,41 @@ btnResetCalib.addEventListener('click', () => {
 ══════════════════════════════════════════ */
 let calibAdjustPoints=null; // [{label, pt:{x,y}, lat?, lng?}]
 let calibAdjustArmed=null;  // label of the point currently armed for a single click
+let calibAdjustBaseRes=null; // {w,h} video resolution the draft's pixel coords are relative to
 
 function calibAdjustLabels(){
   return calibration.nativePoints ? ['A','B','C','D'] : calibration.points.map(p=>p.label);
 }
+// Only one overlay-click mode should ever act on a click at a time —
+// otherwise an armed calibration-adjust point can get silently swallowed by
+// a capture mode left on from earlier (the click dispatcher already gives
+// calibAdjustArmed top priority as a second line of defense, but turning
+// the others off here avoids any ambiguity about which mode is "live").
+function disableOtherOverlayModes(except){
+  if(captureMode && except!=='capture'){
+    captureMode=false;
+    btnCaptureMode.textContent='🏷 Beispiel-Modus: Aus';
+    btnCaptureMode.classList.remove('primary');
+    document.body.classList.remove('capture-active');
+  }
+  if(manualCaptureMode && except!=='manual'){
+    manualCaptureMode=false;
+    btnManualCaptureMode.textContent='📍 Manuell erfassen: Aus';
+    btnManualCaptureMode.classList.remove('primary');
+  }
+  if(deselectMode && except!=='deselect'){
+    deselectMode=false;
+    btnDeselectMode.textContent='❌ Objekt abwählen: Aus';
+    btnDeselectMode.classList.remove('primary');
+  }
+}
 btnCalibAdjustMode.addEventListener('click', () => {
-  if(!calibration) return;
+  if(!calibration || !video.videoWidth || !video.videoHeight) return;
+  disableOtherOverlayModes();
   calibAdjustPoints = calibration.nativePoints
     ? calibration.nativePoints.map((pt,i)=>({label:calibAdjustLabels()[i], pt:{...pt}}))
     : calibration.points.map(p=>({label:p.label, pt:{...p.videoPt}, lat:p.lat, lng:p.lng}));
+  calibAdjustBaseRes={w:video.videoWidth, h:video.videoHeight};
   calibAdjustArmed=null;
   btnCalibAdjustMode.disabled=true;
   btnCalibAdjustConfirm.disabled=false;
@@ -2240,6 +2295,20 @@ btnCalibAdjustMode.addEventListener('click', () => {
   calibAdjustStatus.textContent='Punkt zum Neusetzen wählen, dann im Video anklicken. Danach bestätigen.';
   renderCalibAdjustList();
 });
+// Resolution can change mid-adjustment (different source/resolution picked
+// while the sidebar's still open) — rescale the in-progress draft points
+// proportionally instead of leaving them referring to the old pixel grid,
+// so they stay visible in the right place and stay correctable.
+function rescaleCalibAdjustPointsIfNeeded(){
+  if(!calibAdjustPoints || !calibAdjustBaseRes) return;
+  const vw=video.videoWidth, vh=video.videoHeight;
+  if(!vw || !vh || (vw===calibAdjustBaseRes.w && vh===calibAdjustBaseRes.h)) return;
+  const sx=vw/calibAdjustBaseRes.w, sy=vh/calibAdjustBaseRes.h;
+  calibAdjustPoints.forEach(p => { p.pt={x:p.pt.x*sx, y:p.pt.y*sy}; });
+  calibAdjustBaseRes={w:vw, h:vh};
+  renderCalibAdjustList();
+  calibAdjustStatus.textContent='Auflösung geändert — Punkte automatisch mitskaliert.';
+}
 function renderCalibAdjustList(){
   calibAdjustList.innerHTML='';
   if(!calibAdjustPoints) return;
@@ -2252,6 +2321,7 @@ function renderCalibAdjustList(){
     bSet.textContent = calibAdjustArmed===p.label ? '… im Video klicken' : '🖊 Neu setzen';
     bSet.disabled = calibAdjustArmed!==null && calibAdjustArmed!==p.label;
     bSet.onclick=() => {
+      disableOtherOverlayModes();
       calibAdjustArmed=p.label;
       overlay.style.pointerEvents='auto';
       calibAdjustStatus.textContent=`Punkt ${p.label}: im Video anklicken.`;
@@ -2271,7 +2341,7 @@ function handleCalibAdjustClick(native){
   renderCalibAdjustList();
 }
 function exitCalibAdjustMode(){
-  calibAdjustPoints=null; calibAdjustArmed=null;
+  calibAdjustPoints=null; calibAdjustArmed=null; calibAdjustBaseRes=null;
   overlay.style.pointerEvents='none';
   btnCalibAdjustMode.disabled=!calibration;
   btnCalibAdjustConfirm.disabled=true;
@@ -2377,6 +2447,10 @@ btnResetRoi.addEventListener('click', () => {
    Training example capture
 ══════════════════════════════════════════ */
 const CLASS_OPTIONS=['Motorrad/Fahrrad','PKW','LKW/Bus','Person','Störung','Sonstiges'];
+CLASS_OPTIONS.forEach(c => {
+  const o=document.createElement('option'); o.value=c; o.textContent=c;
+  manualCaptureClassSelect.appendChild(o);
+});
 let captureMode=false, trainingExamples=[], exampleNextId=1;
 let learnedProfile=null; // {className: {avgWidthM, avgArea, n}} — derived numbers only, no images
 // Explicit, persistent switch for whether classify() actually consults the
@@ -2411,7 +2485,7 @@ function saveLearningState(){
       useLearnedProfile,
       trainingExamples: trainingExamples.map(({id,label,feat,capturedAt,trackId})=>({id,label,feat,capturedAt,trackId})),
       autoLearnPool,
-      pendingAutoSamples: pendingAutoSamples.map(({id,label,feat,capturedAt})=>({id,label,feat,capturedAt})),
+      pendingAutoSamples: pendingAutoSamples.map(({id,label,feat,capturedAt,source,trackId})=>({id,label,feat,capturedAt,source,trackId})),
       autoLearnRounds,
       exampleNextId,
       pendingCap: PENDING_CAP
@@ -2457,6 +2531,7 @@ btnCloseExamplesPage.addEventListener('click', () => examplesPage.classList.remo
 
 btnCaptureMode.addEventListener('click', () => {
   captureMode=!captureMode;
+  if(captureMode) disableOtherOverlayModes('capture');
   btnCaptureMode.textContent = captureMode ? '🏷 Beispiel-Modus: An' : '🏷 Beispiel-Modus: Aus';
   btnCaptureMode.classList.toggle('primary', captureMode);
   document.body.classList.toggle('capture-active', captureMode);
@@ -2495,6 +2570,7 @@ function handleCaptureClick(native){
 let manualCaptureMode=false;
 btnManualCaptureMode.addEventListener('click', () => {
   manualCaptureMode=!manualCaptureMode;
+  if(manualCaptureMode) disableOtherOverlayModes('manual');
   btnManualCaptureMode.textContent = manualCaptureMode ? '📍 Manuell erfassen: An' : '📍 Manuell erfassen: Aus';
   btnManualCaptureMode.classList.toggle('primary', manualCaptureMode);
   overlay.style.pointerEvents = manualCaptureMode ? 'auto' : 'none';
@@ -2528,21 +2604,90 @@ function cropPreviewAtNativePoint(nx,ny,cropW,cropH){
   crop.getContext('2d').drawImage(video,sxp,syp,cw,ch,0,0,crop.width,crop.height);
   return crop.toDataURL('image/jpeg',0.75);
 }
+// Nearest track to a native-pixel point, regardless of confirmed state (a
+// manual click should be able to grab and start following an object even
+// just as it's first appearing) — same nearest-neighbor approach as
+// handleCaptureClick(), just without requiring t.confirmed.
+function nearestTrackToNativePoint(native){
+  const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
+  const sX=vw/PW, sY=vh/PH;
+  let best=null, bestD=Infinity;
+  for(const t of tracks){
+    const nx=(t.dispX??t.x)*sX, ny=(t.dispY??t.y)*sY;
+    const d=Math.hypot(nx-native.x, ny-native.y);
+    if(d<bestD){bestD=d;best=t;}
+  }
+  const tol = best ? Math.max(40,(best.dispW??best.w??20)*sX) : 0;
+  return (best && bestD<=tol) ? best : null;
+}
 function handleManualCaptureClick(native){
   if(!hasSource){ manualCaptureStatus.textContent='Keine Videoquelle geladen.'; return; }
-  // "geeignet großer Bildausschnitt" — the same minimum size already
-  // required of auto-captures, so manual and automatic examples are
-  // consistently useful for training regardless of how they were collected.
-  const feat=computeFeaturesAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
-  const preview=cropPreviewAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
+  const immediateLabel=manualCaptureClassSelect.value || null; // optional real-time classification
+  const track=nearestTrackToNativePoint(native);
+  let feat, preview, trackId=null;
+  if(track){
+    // Hits an already-detected object — capture using its actual bounding
+    // box (same as the tracked/confirmed capture path) and keep following
+    // it: the track isn't newly created here, it already exists and
+    // continues being updated every frame regardless: linking trackId just
+    // ties this example back to that ongoing trajectory, and an immediate
+    // classification (if chosen) is applied to the live track itself too.
+    feat=computeFeatures(track);
+    preview=capturePreview(track);
+    trackId=track.id;
+    if(immediateLabel){ track.manualCls=immediateLabel; track.cls=immediateLabel; }
+  } else {
+    // No tracked object at the click — fall back to a fixed-size crop
+    // ("geeignet großer Bildausschnitt", matching the minimum auto-capture
+    // size) so an arbitrary point can still be captured.
+    feat=computeFeaturesAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
+    preview=cropPreviewAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
+  }
   const ex={
-    id:exampleNextId++, label:'Sonstiges', feat, capturedAt:new Date().toISOString(),
-    _preview:preview, source:'manual'
+    id:exampleNextId++, label:immediateLabel||'Sonstiges', feat, capturedAt:new Date().toISOString(),
+    _preview:preview, source:'manual', trackId
   };
   pendingAutoSamples.push(ex); // deliberately bypasses PENDING_CAP/pendingCapturePaused
   renderPendingList();
   saveLearningState();
-  manualCaptureStatus.textContent=`Manuell erfasst (#${ex.id}) — zur Sichtprüfung hinzugefügt, noch unklassifiziert.`;
+  manualCaptureStatus.textContent = track
+    ? `Manuell erfasst (#${ex.id}) — verknüpft mit verfolgtem Objekt #${track.id}${immediateLabel?`, klassifiziert als "${immediateLabel}"`:', noch unklassifiziert'}.`
+    : `Manuell erfasst (#${ex.id})${immediateLabel?`, klassifiziert als "${immediateLabel}"`:', noch unklassifiziert'} — zur Sichtprüfung hinzugefügt.`;
+}
+
+/* ══════════════════════════════════════════
+   Deselect: mark a live tracked object (whether it was captured manually
+   or picked up automatically) as wrongly interpreted right away, instead
+   of only being able to reject it later in the Sichtprüfung. Unlike a
+   plain rejection, this still counts — it's approved directly as a
+   Störung example, so a misinterpreted object continues to influence the
+   object determination rather than just being discarded.
+══════════════════════════════════════════ */
+let deselectMode=false;
+btnDeselectMode.addEventListener('click', () => {
+  deselectMode=!deselectMode;
+  if(deselectMode) disableOtherOverlayModes('deselect');
+  btnDeselectMode.textContent = deselectMode ? '❌ Objekt abwählen: An' : '❌ Objekt abwählen: Aus';
+  btnDeselectMode.classList.toggle('primary', deselectMode);
+  overlay.style.pointerEvents = deselectMode ? 'auto' : 'none';
+  deselectStatus.textContent = deselectMode
+    ? 'Aktiv: Klicke auf ein fälschlich erkanntes Objekt.'
+    : 'Aktivieren, dann auf ein fälschlich erkanntes Objekt klicken — wird sofort als Störung gewertet und fließt weiterhin in die Ermittlung ein, statt einfach verworfen zu werden.';
+});
+function handleDeselectClick(native){
+  const track=nearestTrackToNativePoint(native);
+  if(!track){ deselectStatus.textContent='Kein Objekt in der Nähe des Klicks gefunden.'; return; }
+  track.manualCls='Störung'; track.cls='Störung'; track.isArtifact=true;
+  autoLearnPool.push({label:'Störung', feat:computeFeatures(track)});
+  if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
+  // Also pull it out of the pending queue if it was already sitting there
+  // waiting on a decision — it's just been made, no need to review it twice.
+  pendingAutoSamples=pendingAutoSamples.filter(e=>e.trackId!==track.id);
+  if(pendingAutoSamples.length<=PENDING_RESUME_AT) pendingCapturePaused=false;
+  renderPendingList();
+  renderExampleList();
+  recomputeLearnedProfile();
+  deselectStatus.textContent=`Objekt #${track.id} als Störung gewertet — fließt in die Ermittlung ein.`;
 }
 
 // Derive a small numeric feature profile from the track — this, not a
@@ -2833,6 +2978,7 @@ function renderPendingList(){
       actions:[
         {label:'🔍 Prüfen', onClick:() => openReviewModal(ex.id)},
         {label:'✓ Genehmigen', cls:'primary', onClick:() => approvePendingSample(ex.id)},
+        {label:'❌ Kein Objekt', onClick:() => markPendingAsFalsePositive(ex.id)},
         {label:'✕ Ablehnen', onClick:() => rejectPendingSample(ex.id)}
       ]
     });
@@ -2863,6 +3009,16 @@ function rejectPendingSample(id){
   if(pendingAutoSamples.length<=PENDING_RESUME_AT) pendingCapturePaused=false;
   renderPendingList();
   saveLearningState();
+}
+// "Deselecting" a wrongly-interpreted capture — unlike Ablehnen (which just
+// discards it with no effect), this relabels it as Störung and still
+// approves it into the counted pool, so a misinterpreted object continues
+// to influence the object determination instead of being thrown away.
+function markPendingAsFalsePositive(id){
+  const ex=pendingAutoSamples.find(e=>e.id===id);
+  if(!ex) return;
+  ex.label='Störung';
+  approvePendingSample(id);
 }
 btnRejectAllPending.addEventListener('click', () => {
   if(!pendingAutoSamples.length) return;
@@ -2934,6 +3090,12 @@ btnReviewAccept.addEventListener('click', () => {
   if(!item) return;
   item.label=reviewClassSelect.value; // apply the (possibly corrected) classification
   approvePendingSample(item.id);
+  renderReviewCurrent();
+});
+btnReviewFalsePositive.addEventListener('click', () => {
+  const item=pendingAutoSamples[reviewIndex];
+  if(!item) return;
+  markPendingAsFalsePositive(item.id);
   renderReviewCurrent();
 });
 btnReviewReject.addEventListener('click', () => {
@@ -3219,11 +3381,17 @@ function pushStillDetectionAsExample(det){
 overlay.addEventListener('click', ev => {
   const rect=overlay.getBoundingClientRect();
   const native=displayToNative(ev.clientX-rect.left, ev.clientY-rect.top);
+  // A single armed calibration-adjust point is a deliberate, just-initiated
+  // one-shot action — it must win over any other mode that happens to still
+  // be toggled on (capture mode, manual capture, ...), otherwise the click
+  // gets silently swallowed by whichever mode's handler runs first and the
+  // adjustment never applies.
+  if(calibAdjustArmed){ handleCalibAdjustClick(native); return; }
   if(roiMode){ handleRoiClick(native); return; }
   if(calibrationMode){ handleCalibClick(native); return; }
   if(captureMode){ handleCaptureClick(native); return; }
   if(manualCaptureMode){ handleManualCaptureClick(native); return; }
-  if(calibAdjustArmed){ handleCalibAdjustClick(native); return; }
+  if(deselectMode){ handleDeselectClick(native); return; }
 });
 
 /* ══════════════════════════════════════════
@@ -3886,7 +4054,11 @@ function updateTracks(blobs){
       const b=blobs[bestI];
       const prevHist=t.history[t.history.length-1];
       t.dx=b.cx-t.x;t.dy=b.cy-t.y;
-      t.x=b.cx;t.y=b.cy;t.area=b.area;t.w=b.w;t.h=b.h;t.cls=classify(b);
+      t.x=b.cx;t.y=b.cy;t.area=b.area;t.w=b.w;t.h=b.h;
+      // A real-time manual classification (set via manual capture-by-click)
+      // overrides the heuristic/learned classifier for this track's
+      // remaining lifetime, instead of being silently reclassified next frame.
+      t.cls=t.manualCls||classify(b);
       const sf=0.3;
       t.dispX=(t.dispX===undefined)?t.x:t.dispX+(t.x-t.dispX)*sf;
       t.dispY=(t.dispY===undefined)?t.y:t.dispY+(t.y-t.dispY)*sf;
@@ -3924,8 +4096,8 @@ function updateTracks(blobs){
       });
       if(t.history.length>300) t.history.shift();
       t.missed=0; unmatched.delete(bestI);
-      if(looksLikeGlassArtifact(t)){if(!t.isArtifact)noiseCount++;t.cls='Störung';t.isArtifact=true;}
-      else t.isArtifact=false;
+      if(!t.manualCls && looksLikeGlassArtifact(t)){if(!t.isArtifact)noiseCount++;t.cls='Störung';t.isArtifact=true;}
+      else if(!t.manualCls) t.isArtifact=false;
       t.streak=(t.streak||1)+1;
       if(!t.confirmed&&!t.isArtifact&&t.streak>=CONFIRM_FRAMES){t.confirmed=true;allVehicles.push(t);collectAutoCalibSample(t);collectAutoLearnSample(t);}
       if(t.confirmed){
