@@ -1704,10 +1704,33 @@ stillFileInput.addEventListener('change', () => {
 
 const COCO_CLASS_MAP={car:'PKW',truck:'LKW/Bus',bus:'LKW/Bus',motorcycle:'Motorrad/Fahrrad',bicycle:'Motorrad/Fahrrad',person:'Person'};
 
+function bboxIoU(b1,b2){
+  const [x1,y1,w1,h1]=b1, [x2,y2,w2,h2]=b2;
+  const xa=Math.max(x1,x2), ya=Math.max(y1,y2);
+  const xb=Math.min(x1+w1,x2+w2), yb=Math.min(y1+h1,y2+h2);
+  const inter=Math.max(0,xb-xa)*Math.max(0,yb-ya);
+  const union=w1*h1+w2*h2-inter;
+  return union>0 ? inter/union : 0;
+}
+// The detection model can propose two overlapping boxes for one real object
+// (sometimes even under different classes). Keep only the higher-confidence
+// box whenever two detections overlap heavily — same check as above, applied
+// to model output instead of motion blobs.
+function dedupeOverlappingDetections(dets){
+  const sorted=[...dets].sort((a,b)=>b.score-a.score);
+  const kept=[];
+  for(const d of sorted){
+    if(kept.some(k=>bboxIoU(k.bbox,d.bbox)>0.45)) continue;
+    kept.push(d);
+  }
+  return kept;
+}
+
 async function detectObjectsIn(canvas){
   const model=await ensureCocoModel();
   const preds=await model.detect(canvas);
-  return preds.filter(p=>COCO_CLASS_MAP[p.class]).map((p,i)=>({id:i, cls:COCO_CLASS_MAP[p.class], score:p.score, bbox:p.bbox}));
+  const dets=preds.filter(p=>COCO_CLASS_MAP[p.class]).map((p,i)=>({id:i, cls:COCO_CLASS_MAP[p.class], score:p.score, bbox:p.bbox}));
+  return dedupeOverlappingDetections(dets);
 }
 
 btnRunStillDetect.addEventListener('click', async () => {
@@ -2324,6 +2347,42 @@ function looksLikeGlassArtifact(t){
   return Math.min(diff,Math.abs(diff-Math.PI))>(55*Math.PI/180);
 }
 
+// A single real vehicle can end up as two (or more) separate motion blobs in
+// one frame — e.g. windshield glare or a shadow line splitting the mask down
+// the middle. Before tracking sees them, merge any blobs whose bounding
+// boxes are near-touching relative to their size back into one, as long as
+// the combined shape still looks plausible (not wildly elongated — that
+// would suggest two genuinely separate objects that just happen to align).
+function mergeCloseBlobs(blobs){
+  let cur=blobs.map(b=>({...b}));
+  let changed=true;
+  while(changed){
+    changed=false;
+    for(let i=0;i<cur.length && !changed;i++){
+      for(let j=i+1;j<cur.length;j++){
+        const a=cur[i], b=cur[j];
+        const aMinX=a.cx-a.w/2, aMaxX=a.cx+a.w/2, aMinY=a.cy-a.h/2, aMaxY=a.cy+a.h/2;
+        const bMinX=b.cx-b.w/2, bMaxX=b.cx+b.w/2, bMinY=b.cy-b.h/2, bMaxY=b.cy+b.h/2;
+        const gapX=Math.max(0, Math.max(aMinX,bMinX)-Math.min(aMaxX,bMaxX));
+        const gapY=Math.max(0, Math.max(aMinY,bMinY)-Math.min(aMaxY,bMaxY));
+        const gap=Math.hypot(gapX,gapY);
+        const threshold=Math.max(2, Math.sqrt(Math.min(a.area,b.area))*0.6);
+        if(gap>threshold) continue;
+        const minX=Math.min(aMinX,bMinX), maxX=Math.max(aMaxX,bMaxX);
+        const minY=Math.min(aMinY,bMinY), maxY=Math.max(aMaxY,bMaxY);
+        const cw=maxX-minX, ch=maxY-minY;
+        const elong=Math.max(cw/ch, ch/cw);
+        if(elong>5.5) continue; // would look like two unrelated objects, not one split vehicle
+        cur.splice(j,1); cur.splice(i,1);
+        cur.push({cx:(minX+maxX)/2, cy:(minY+maxY)/2, w:cw, h:ch, area:a.area+b.area});
+        changed=true;
+        break;
+      }
+    }
+  }
+  return cur;
+}
+
 /* ══════════════════════════════════════════
    Core loop
 ══════════════════════════════════════════ */
@@ -2421,8 +2480,9 @@ function step(){
     }
   }
 
-  updateTracks(blobs);
-  renderOverlay(blobs);
+  const mergedBlobs=mergeCloseBlobs(blobs);
+  updateTracks(mergedBlobs);
+  renderOverlay(mergedBlobs);
   frameCount++;
   diagLine.textContent=`Frame #${frameCount} · ${new Date().toLocaleTimeString('de-DE')} · ~${measuredFps.toFixed(1)} fps · ${motionPixels} bewegte Px · ${blobs.length} Objekte`;
 }
