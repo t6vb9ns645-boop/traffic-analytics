@@ -660,10 +660,17 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       <div class="diag-msg" id="autoLearnStatus" style="margin-top:6px;">Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen und verbessert die Klassifizierung laufend im Hintergrund.</div>
     </div>
     <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert, exportiert oder in eine Cloud übertragen</b> (keine Gesichter, keine Kennzeichen — die App hat ohnehin keine Serveranbindung). Die Bild-Vorschau unten dient nur der Kontrolle in dieser Sitzung und verschwindet beim Neuladen. Das <b>Zahlen-Profil selbst bleibt erhalten</b>: es wird lokal in diesem Browser gespeichert (localStorage), damit die Objekterkennung nach einem Neuladen nicht wieder von vorne anfängt.</div>
+    <div class="step-section" style="padding:10px 12px;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+        <input type="checkbox" id="useLearnedProfileToggle" checked style="accent-color:var(--accent);">
+        ✅ Gelerntes Profil fortlaufend verwenden
+      </label>
+      <div class="diag-msg" id="useLearnedProfileStatus" style="margin-top:6px;">Das gelernte Profil wird bei jeder Klassifizierung bevorzugt genutzt, sobald genug Beispiele vorliegen. Deaktivieren, um es bewusst auszublenden — die Erkennung nutzt dann nur die Standard-Heuristik, die gesammelten Beispiele bleiben aber erhalten und werden weiter im Hintergrund verfeinert.</div>
+    </div>
     <div id="exampleList"></div>
     <div class="row">
       <button id="btnLearnFromExamples" style="flex:1;">🧠 Aus Beispielen lernen</button>
-      <button id="btnResetLearning" disabled>↺</button>
+      <button id="btnResetLearning" disabled title="Gelerntes Profil verwerfen (Beispiele bleiben erhalten)">🗑 Profil</button>
     </div>
     <div class="diag-msg" id="learnStatus">Noch kein gelerntes Profil aktiv — Standard-Heuristik wird verwendet.</div>
     <div class="row">
@@ -826,6 +833,8 @@ const btnResetLearning     = document.getElementById('btnResetLearning');
 const learnStatus          = document.getElementById('learnStatus');
 const autoLearnToggle      = document.getElementById('autoLearnToggle');
 const autoLearnStatus      = document.getElementById('autoLearnStatus');
+const useLearnedProfileToggle = document.getElementById('useLearnedProfileToggle');
+const useLearnedProfileStatus = document.getElementById('useLearnedProfileStatus');
 
 const btnSpeedChartDrawer = document.getElementById('btnSpeedChartDrawer');
 const btnCloseSpeedChart  = document.getElementById('btnCloseSpeedChart');
@@ -1332,6 +1341,19 @@ btnResetRoi.addEventListener('click', () => {
 const CLASS_OPTIONS=['Motorrad/Fahrrad','PKW','LKW/Bus','Person','Störung','Sonstiges'];
 let captureMode=false, trainingExamples=[], exampleNextId=1;
 let learnedProfile=null; // {className: {avgWidthM, avgArea, n}} — derived numbers only, no images
+// Explicit, persistent switch for whether classify() actually consults the
+// learned profile — independent from whether new examples keep being
+// collected/refined in the background (autoLearnEnabled below). Without
+// this, disabling use of the trained data would get silently undone the
+// next time the background auto-learner re-derives the profile.
+let useLearnedProfile=true;
+useLearnedProfileToggle.addEventListener('change', () => {
+  useLearnedProfile=useLearnedProfileToggle.checked;
+  useLearnedProfileStatus.textContent = useLearnedProfile
+    ? 'Das gelernte Profil wird bei jeder Klassifizierung bevorzugt genutzt, sobald genug Beispiele vorliegen.'
+    : 'Ausgeblendet: Die Erkennung nutzt nur die Standard-Heuristik. Gesammelte Beispiele bleiben erhalten und werden — falls aktiv — weiter im Hintergrund verfeinert.';
+  saveLearningState();
+});
 
 /* ══════════════════════════════════════════
    Local persistence of learning progress — so recognition keeps working
@@ -1348,6 +1370,7 @@ function saveLearningState(){
   try{
     const payload={
       learnedProfile,
+      useLearnedProfile,
       trainingExamples: trainingExamples.map(({id,label,feat,capturedAt,trackId})=>({id,label,feat,capturedAt,trackId})),
       autoLearnPool,
       autoLearnRounds,
@@ -1363,6 +1386,10 @@ function loadLearningState(){
     if(!raw) return false;
     const data=JSON.parse(raw);
     if(data.learnedProfile) learnedProfile=data.learnedProfile;
+    if(typeof data.useLearnedProfile==='boolean'){
+      useLearnedProfile=data.useLearnedProfile;
+      useLearnedProfileToggle.checked=useLearnedProfile;
+    }
     if(Array.isArray(data.trainingExamples)) trainingExamples=data.trainingExamples.map(ex=>({...ex,_preview:null}));
     if(Array.isArray(data.autoLearnPool)) autoLearnPool=data.autoLearnPool;
     if(typeof data.autoLearnRounds==='number') autoLearnRounds=data.autoLearnRounds;
@@ -2248,13 +2275,13 @@ function classify(blob){
   const tall=h>w*1.5;
   if(calibration){
     const wm=measureCalibratedWidthM(blob);
-    if(learnedProfile){
+    if(useLearnedProfile && learnedProfile){
       const cls=nearestLearnedClass(learnedProfile, c => c.avgWidthM, wm);
       if(cls) return cls;
     }
     return staticClassifyByWidth(tall, wm);
   }
-  if(learnedProfile){
+  if(useLearnedProfile && learnedProfile){
     const cls=nearestLearnedClass(learnedProfile, c => c.avgArea, area);
     if(cls) return cls;
   }
@@ -2992,7 +3019,8 @@ if(loadLearningState()){
   if(learnedProfile){
     btnResetLearning.disabled=false;
     const usableClasses=Object.keys(learnedProfile).length;
-    learnStatus.textContent=`Gelerntes Profil aus vorheriger Sitzung geladen (${usableClasses} Klasse(n), ${autoLearnRounds} automatische Verfeinerung(en) bisher) — lokal in diesem Browser gespeichert, nie hochgeladen.`;
+    const usageNote=useLearnedProfile ? 'wird verwendet' : 'Verwendung ausgeblendet';
+    learnStatus.textContent=`Gelerntes Profil aus vorheriger Sitzung geladen (${usableClasses} Klasse(n), ${autoLearnRounds} automatische Verfeinerung(en) bisher, ${usageNote}) — lokal in diesem Browser gespeichert, nie hochgeladen.`;
   }
 }
 })();
