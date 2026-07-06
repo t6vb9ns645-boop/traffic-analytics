@@ -319,6 +319,46 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 .example-card .card-actions{display:flex;gap:6px;}
 .example-card .card-actions button{flex:1;font-size:11px;padding:6px 8px;}
 .category-group{margin-bottom:18px;}
+
+/* Sichtprüfung pop-up: one image at a time, over the training-data overview —
+   left shows what's coming up next, center the current image at its full
+   captured resolution, right the classification + accept/reject controls. */
+.review-modal{
+  position:fixed;inset:0;z-index:600;background:var(--bg);
+  display:none;flex-direction:column;
+}
+.review-modal.open{display:flex;}
+.review-modal-head{
+  display:flex;align-items:center;gap:14px;padding:12px 20px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex-shrink:0;
+}
+.review-modal-head h1{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0;flex:1;}
+.review-modal-body{
+  flex:1;min-height:0;padding:20px;display:grid;
+  grid-template-columns:160px 1fr 220px;gap:16px;
+}
+@media(max-width:800px){
+  .review-modal-body{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr) auto;overflow-y:auto;}
+  .review-upcoming{order:2;flex-direction:row !important;overflow-x:auto;overflow-y:hidden !important;}
+  .review-upcoming img{width:70px;flex-shrink:0;}
+  .review-current{order:1;}
+  .review-controls{order:3;}
+}
+.review-upcoming{display:flex;flex-direction:column;gap:8px;overflow-y:auto;min-height:0;}
+.review-upcoming h3{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:0;}
+.review-upcoming img{
+  width:100%;border-radius:6px;object-fit:cover;aspect-ratio:4/3;
+  border:1px solid var(--line);opacity:.7;cursor:pointer;background:#000;
+}
+.review-upcoming img:hover{opacity:1;}
+.review-current{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:10px;min-width:0;min-height:0;background:var(--panel);border-radius:10px;
+  border:1px solid var(--line);padding:14px;
+}
+.review-current img{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;background:#000;min-height:0;}
+.review-controls{display:flex;flex-direction:column;gap:10px;}
+.review-controls select{width:100%;}
 .category-group h3{
   font-size:11.5px;color:var(--text);margin:0 0 8px;display:flex;align-items:center;gap:6px;
   text-transform:none;letter-spacing:normal;
@@ -792,14 +832,44 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
     </div>
 
     <div class="examples-section">
-      <h2>Zur Sichtprüfung ausstehend (<span id="pendingCount">0</span>)</h2>
-      <p class="diag-msg">Automatisch im Hintergrund gesammelte Beispiele — zählen erst zur Berechnung, sobald sie hier geprüft und genehmigt wurden.</p>
+      <div class="row" style="align-items:center;">
+        <h2 style="flex:1;margin:0;border:none;padding:0;">Zur Sichtprüfung ausstehend (<span id="pendingCount">0</span>)</h2>
+        <button id="btnStartReview" class="primary">🔍 Sichtprüfung starten</button>
+      </div>
+      <p class="diag-msg">Automatisch im Hintergrund gesammelte Beispiele — zählen erst zur Berechnung, sobald sie hier geprüft und genehmigt wurden. Einzeln im Pop-up durchgehen oder direkt in der Karte genehmigen/ablehnen.</p>
       <div class="examples-grid" id="pendingGrid"></div>
     </div>
 
     <div class="examples-section">
       <h2>Kategorisierte Beispiele</h2>
       <div id="categoryGroups"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ Sichtprüfung: Pop-up zum Klassifizieren einzelner Bilder ══════════ -->
+<div class="review-modal" id="reviewModal">
+  <div class="review-modal-head">
+    <button class="ghost" id="btnReviewBack">← Zurück</button>
+    <h1>Trainingsdaten — Sichtprüfung</h1>
+    <span class="diag-msg" id="reviewProgress"></span>
+  </div>
+  <div class="review-modal-body">
+    <div class="review-upcoming">
+      <h3>Nächste Bilder</h3>
+      <div id="reviewUpcomingList"></div>
+    </div>
+    <div class="review-current">
+      <img id="reviewCurrentImg" alt="Aktuelles Bild (beste verfügbare Auflösung)">
+      <div class="diag-msg" id="reviewCurrentMeta"></div>
+    </div>
+    <div class="review-controls">
+      <div class="step-section">
+        <h3>Klassifizierung (KI-Vorschlag vorausgewählt)</h3>
+        <select id="reviewClassSelect"></select>
+      </div>
+      <button id="btnReviewAccept" class="primary" style="width:100%;">✓ Annehmen</button>
+      <button id="btnReviewReject" class="ghost" style="width:100%;">✕ Ablehnen</button>
     </div>
   </div>
 </div>
@@ -1005,6 +1075,16 @@ const examplesPageCount = document.getElementById('examplesPageCount');
 const categoryGroups    = document.getElementById('categoryGroups');
 const pendingGrid       = document.getElementById('pendingGrid');
 const pendingCount      = document.getElementById('pendingCount');
+const btnStartReview    = document.getElementById('btnStartReview');
+const reviewModal          = document.getElementById('reviewModal');
+const btnReviewBack        = document.getElementById('btnReviewBack');
+const reviewProgress       = document.getElementById('reviewProgress');
+const reviewUpcomingList   = document.getElementById('reviewUpcomingList');
+const reviewCurrentImg     = document.getElementById('reviewCurrentImg');
+const reviewCurrentMeta    = document.getElementById('reviewCurrentMeta');
+const reviewClassSelect    = document.getElementById('reviewClassSelect');
+const btnReviewAccept      = document.getElementById('btnReviewAccept');
+const btnReviewReject      = document.getElementById('btnReviewReject');
 const btnLearnFromExamples = document.getElementById('btnLearnFromExamples');
 const btnResetLearning     = document.getElementById('btnResetLearning');
 const learnStatus          = document.getElementById('learnStatus');
@@ -1932,11 +2012,13 @@ function capturePreview(t){
   const cw=Math.min(vw,bw*pad), ch=Math.min(vh,bh*pad);
   const sxp=Math.max(0,Math.min(vw-cw,cx-cw/2));
   const syp=Math.max(0,Math.min(vh-ch,cy-ch/2));
-  // Match the thumbnail's resolution to the actual captured region (up to a
+  // Match the preview's resolution to the actual captured region (up to a
   // cap) instead of a fixed 80px — a hardcoded size either upscaled blurrily
   // for small objects or threw away real detail for large ones/high-res
-  // sources, making the review ("Sichtprüfung") harder to judge accurately.
-  const maxDim=240;
+  // sources. This same crop is shown both as a small grid thumbnail and as
+  // the large centered image in the Sichtprüfung pop-up, so the cap is kept
+  // generous (this is session-only in memory, never persisted/exported).
+  const maxDim=480;
   let outW, outH;
   if(cw>=ch){ outW=Math.min(maxDim,Math.round(cw)); outH=Math.max(1,Math.round(outW*ch/cw)); }
   else { outH=Math.min(maxDim,Math.round(ch)); outW=Math.max(1,Math.round(outH*cw/ch)); }
@@ -2126,6 +2208,7 @@ function renderPendingList(){
     const card=makeExampleCard(ex, {
       onLabelChange: () => {}, // just edits the label in place before a decision
       actions:[
+        {label:'🔍 Prüfen', onClick:() => openReviewModal(ex.id)},
         {label:'✓ Genehmigen', cls:'primary', onClick:() => approvePendingSample(ex.id)},
         {label:'✕ Ablehnen', onClick:() => rejectPendingSample(ex.id)}
       ]
@@ -2150,6 +2233,73 @@ function rejectPendingSample(id){
   renderPendingList();
   saveLearningState();
 }
+
+/* ══════════════════════════════════════════
+   Sichtprüfung pop-up — steps through pendingAutoSamples one at a time
+   instead of only ever editing them inline in the grid: left shows what's
+   coming up, center shows the current image at its best available (i.e.
+   as-captured) resolution, right holds the classification dropdown
+   (pre-selected with the classifier's own suggestion) plus accept/reject.
+══════════════════════════════════════════ */
+let reviewIndex=0;
+function openReviewModal(startId){
+  if(!pendingAutoSamples.length) return;
+  reviewIndex = startId!=null ? pendingAutoSamples.findIndex(e=>e.id===startId) : 0;
+  if(reviewIndex<0) reviewIndex=0;
+  examplesPage.classList.remove('open');
+  reviewModal.classList.add('open');
+  renderReviewCurrent();
+}
+function closeReviewModal(){
+  reviewModal.classList.remove('open');
+  openExamplesPage();
+}
+function renderReviewCurrent(){
+  if(!pendingAutoSamples.length){ closeReviewModal(); return; }
+  if(reviewIndex>=pendingAutoSamples.length) reviewIndex=pendingAutoSamples.length-1;
+  const item=pendingAutoSamples[reviewIndex];
+  reviewCurrentImg.src=item._preview||'';
+  reviewCurrentMeta.textContent=item.capturedAt ? `Erfasst: ${new Date(item.capturedAt).toLocaleString()}` : '';
+  reviewClassSelect.innerHTML='';
+  CLASS_OPTIONS.forEach(c=>{
+    const o=document.createElement('option'); o.value=c; o.textContent=c;
+    reviewClassSelect.appendChild(o);
+  });
+  reviewClassSelect.value=item.label; // classifier's own suggestion, pre-selected
+  reviewProgress.textContent=`${reviewIndex+1} / ${pendingAutoSamples.length}`;
+  renderReviewUpcoming();
+}
+function renderReviewUpcoming(){
+  reviewUpcomingList.innerHTML='';
+  const upcoming=pendingAutoSamples.slice(reviewIndex+1, reviewIndex+6);
+  if(!upcoming.length){
+    const msg=document.createElement('div'); msg.className='diag-msg';
+    msg.textContent='Keine weiteren Bilder.';
+    reviewUpcomingList.appendChild(msg);
+    return;
+  }
+  upcoming.forEach((item,i) => {
+    const img=document.createElement('img');
+    img.src=item._preview||''; img.alt=item.label;
+    img.addEventListener('click', () => { reviewIndex=reviewIndex+1+i; renderReviewCurrent(); });
+    reviewUpcomingList.appendChild(img);
+  });
+}
+btnStartReview.addEventListener('click', () => openReviewModal(null));
+btnReviewBack.addEventListener('click', closeReviewModal);
+btnReviewAccept.addEventListener('click', () => {
+  const item=pendingAutoSamples[reviewIndex];
+  if(!item) return;
+  item.label=reviewClassSelect.value; // apply the (possibly corrected) classification
+  approvePendingSample(item.id);
+  renderReviewCurrent();
+});
+btnReviewReject.addEventListener('click', () => {
+  const item=pendingAutoSamples[reviewIndex];
+  if(!item) return;
+  rejectPendingSample(item.id);
+  renderReviewCurrent();
+});
 
 btnExportExamples.addEventListener('click', () => {
   const payload={
