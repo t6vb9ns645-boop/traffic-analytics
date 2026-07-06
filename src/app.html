@@ -882,6 +882,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       <div class="row" style="align-items:center;">
         <h2 style="flex:1;margin:0;border:none;padding:0;">Zur Sichtprüfung ausstehend (<span id="pendingCount">0</span>)</h2>
         <button id="btnStartReview" class="primary">🔍 Sichtprüfung starten</button>
+        <button id="btnRejectAllPending" class="ghost">✕ Alle ablehnen</button>
       </div>
       <p class="diag-msg">Automatisch im Hintergrund gesammelte Beispiele — zählen erst zur Berechnung, sobald sie hier geprüft und genehmigt wurden. Einzeln im Pop-up durchgehen oder direkt in der Karte genehmigen/ablehnen.</p>
       <div class="examples-grid" id="pendingGrid"></div>
@@ -1133,6 +1134,7 @@ const categoryGroups    = document.getElementById('categoryGroups');
 const pendingGrid       = document.getElementById('pendingGrid');
 const pendingCount      = document.getElementById('pendingCount');
 const btnStartReview    = document.getElementById('btnStartReview');
+const btnRejectAllPending = document.getElementById('btnRejectAllPending');
 const reviewModal          = document.getElementById('reviewModal');
 const btnReviewBack        = document.getElementById('btnReviewBack');
 const reviewProgress       = document.getElementById('reviewProgress');
@@ -1319,6 +1321,7 @@ function updateProcessingResolution(){
   PW=pw; PH=ph;
   allocateProcessingBuffers();
   bg=null; frameCount=0; // background model and grids are tied to the old buffer size
+  rescaleCalibrationIfNeeded();
 }
 
 /* ══════════════════════════════════════════
@@ -1598,6 +1601,62 @@ function applyH(H,x,y){
   const W=H[2][0]*x+H[2][1]*y+H[2][2];
   return {x:X/W,y:Y/W};
 }
+
+/* ══════════════════════════════════════════
+   Calibration persistence + resolution-stability. The homography itself
+   (calibration.H/Hinv) is tied to whatever native pixel resolution was
+   active when it was computed — if the source's native resolution changes
+   later (different resolution picked in Step 1, a different file/stream),
+   those pixel coordinates silently mean something else and the ground
+   points would drift out of position. calibDescriptor is the resolution-
+   independent source of truth (fractions of the video's own width/height,
+   plus real-world width/length or lat/lng) that survives both a
+   resolution change and a page reload — the actual calibration is always
+   re-derived from it against the CURRENT video size, so the same
+   real-world reference points keep working and stay correctly positioned.
+══════════════════════════════════════════ */
+const CALIB_STORAGE_KEY='verkehrsanalyse_calibration_v1';
+let calibDescriptor=null;
+function buildCalibDescriptorFromRect(nativePts,width,length,videoW,videoH){
+  return { method:'rect', width, length, fracPoints: nativePts.map(p=>({x:p.x/videoW, y:p.y/videoH})) };
+}
+function buildCalibDescriptorFromMultipoint(points,videoW,videoH){
+  return { method:'multipoint', points: points.map(p=>({
+    label:p.label, lat:p.lat, lng:p.lng,
+    videoFrac:{x:p.videoPt.x/videoW, y:p.videoPt.y/videoH}
+  })) };
+}
+function saveCalibDescriptor(){
+  if(calibDescriptor) localStorage.setItem(CALIB_STORAGE_KEY, JSON.stringify(calibDescriptor));
+  else localStorage.removeItem(CALIB_STORAGE_KEY);
+}
+function loadCalibDescriptor(){
+  try{
+    const raw=localStorage.getItem(CALIB_STORAGE_KEY);
+    if(raw) calibDescriptor=JSON.parse(raw);
+  }catch(e){ calibDescriptor=null; }
+}
+// Re-derives `calibration` from calibDescriptor against the video's CURRENT
+// native resolution — called on every resolution change (including the
+// first time a source's dimensions become known) so a saved calibration
+// keeps applying correctly regardless of what resolution is active.
+function rescaleCalibrationIfNeeded(){
+  if(!calibDescriptor || !video.videoWidth || !video.videoHeight) return;
+  if(calibDescriptor.method==='rect'){
+    const nativePts=calibDescriptor.fracPoints.map(f=>({x:f.x*video.videoWidth, y:f.y*video.videoHeight}));
+    applyCalibrationFromPoints(nativePts, calibDescriptor.width, calibDescriptor.length);
+  } else if(calibDescriptor.method==='multipoint'){
+    const points=calibDescriptor.points.map(p=>({
+      label:p.label, lat:p.lat, lng:p.lng,
+      videoPt:{x:p.videoFrac.x*video.videoWidth, y:p.videoFrac.y*video.videoHeight}
+    }));
+    applyMultipointCalibration(points);
+  }
+  calibStatus.textContent += ' (aus vorheriger Sitzung wiederhergestellt)';
+  calibSummary.textContent += ' (aus vorheriger Sitzung wiederhergestellt)';
+}
+loadCalibDescriptor();
+
 function applyCalibrationFromPoints(nativePts,width,length){
   if(!(width>0)||!(length>0)) return false;
   const worldPts=[{x:0,y:0},{x:width,y:0},{x:width,y:length},{x:0,y:length}];
@@ -1611,6 +1670,14 @@ function applyCalibrationFromPoints(nativePts,width,length){
     // this calibration was created (manual click, lane suggestion, or the
     // automatic flow) — always keep refining it from observed vehicles
     autoCalibActive=true;
+    // Stored resolution-independently (as a fraction of the video's current
+    // native size) so the same real-world reference rectangle keeps working
+    // — and stays correctly positioned — even if the source's resolution
+    // changes later, and survives a page reload.
+    if(video.videoWidth && video.videoHeight){
+      calibDescriptor=buildCalibDescriptorFromRect(nativePts, width, length, video.videoWidth, video.videoHeight);
+      saveCalibDescriptor();
+    }
     return true;
   }
   calibStatus.textContent='Kalibrierung fehlgeschlagen (Punkte kollinear?)';
@@ -2029,31 +2096,46 @@ function latLngToLocalMeters(lat,lng,lat0,lng0){
     y:(lat-lat0)*toRad(1)*R
   };
 }
-btnMpcalibCompute.addEventListener('click', () => {
-  const complete=mpCalibPoints.filter(p=>p.videoPt&&p.mapPt);
-  if(complete.length<4){ mpcalibStatus.textContent='Mindestens 4 vollständige Punktpaare nötig.'; return; }
-  const lat0=complete.reduce((s,p)=>s+p.mapPt.lat,0)/complete.length;
-  const lng0=complete.reduce((s,p)=>s+p.mapPt.lng,0)/complete.length;
-  const worldPts=complete.map(p=>latLngToLocalMeters(p.mapPt.lat,p.mapPt.lng,lat0,lng0));
-  const imgPts=complete.map(p=>p.videoPt);
+// points: [{label, videoPt:{x,y} (native pixels), lat, lng}, ...]. Shared by
+// the "Kalibrierung berechnen" button and by restoring/rescaling a
+// previously saved calibration onto the current video resolution.
+function applyMultipointCalibration(points){
+  if(points.length<4) return {ok:false, msg:'Mindestens 4 vollständige Punktpaare nötig.'};
+  const lat0=points.reduce((s,p)=>s+p.lat,0)/points.length;
+  const lng0=points.reduce((s,p)=>s+p.lng,0)/points.length;
+  const worldPts=points.map(p=>latLngToLocalMeters(p.lat,p.lng,lat0,lng0));
+  const imgPts=points.map(p=>p.videoPt);
   const H=solveHomographyLS(imgPts,worldPts);
   const Hinv=H?invert3x3(H):null;
-  if(!H||!Hinv){ mpcalibStatus.textContent='Kalibrierung fehlgeschlagen (Punkte zu kollinear/ungültig) — andere Punkte wählen.'; return; }
+  if(!H||!Hinv) return {ok:false, msg:'Kalibrierung fehlgeschlagen (Punkte zu kollinear/ungültig) — andere Punkte wählen.'};
   let sqErr=0;
-  complete.forEach((p,i) => {
+  points.forEach((p,i) => {
     const proj=applyH(H,imgPts[i].x,imgPts[i].y);
     sqErr += (proj.x-worldPts[i].x)**2 + (proj.y-worldPts[i].y)**2;
   });
-  const rmsError=Math.sqrt(sqErr/complete.length);
+  const rmsError=Math.sqrt(sqErr/points.length);
   calibration={
     H, Hinv, method:'multi-point-map', rmsError,
-    points: complete.map(p=>({label:p.label, videoPt:p.videoPt, lat:p.mapPt.lat, lng:p.mapPt.lng})),
+    points: points.map(p=>({label:p.label, videoPt:p.videoPt, lat:p.lat, lng:p.lng})),
     nativePoints:null, width:null, length:null
   };
   autoCalibActive=false; // not applicable to an arbitrary ground-control-point set
   btnResetCalib.disabled=false;
   updateCalibSummary();
-  mpcalibStatus.textContent=`Kalibrierung berechnet aus ${complete.length} Punkten — mittlerer Fehler ${rmsError.toFixed(2)} m.`;
+  return {ok:true, rmsError};
+}
+btnMpcalibCompute.addEventListener('click', () => {
+  const complete=mpCalibPoints.filter(p=>p.videoPt&&p.mapPt);
+  const points=complete.map(p=>({label:p.label, videoPt:p.videoPt, lat:p.mapPt.lat, lng:p.mapPt.lng}));
+  const res=applyMultipointCalibration(points);
+  if(!res.ok){ mpcalibStatus.textContent=res.msg; return; }
+  mpcalibStatus.textContent=`Kalibrierung berechnet aus ${points.length} Punkten — mittlerer Fehler ${res.rmsError.toFixed(2)} m.`;
+  // Ground-control points are stored resolution-independently (as a
+  // fraction of the video's current native size + real lat/lng) so the
+  // exact same real-world points keep working — and stay correctly
+  // positioned — even if the source's resolution changes later.
+  calibDescriptor=buildCalibDescriptorFromMultipoint(points, video.videoWidth, video.videoHeight);
+  saveCalibDescriptor();
 });
 
 btnCalibrate.addEventListener('click', () => {
@@ -2075,7 +2157,8 @@ function handleCalibClick(native){
   openDepthCaptureForm(pts, widthPreset.value);
 }
 btnResetCalib.addEventListener('click', () => {
-  calibration=null; btnResetCalib.disabled=true;
+  calibration=null; calibDescriptor=null; btnResetCalib.disabled=true;
+  saveCalibDescriptor();
   updateCalibSummary();
 });
 
@@ -2275,9 +2358,10 @@ function computeFeatures(t){
   return { areaPx:Math.round(t.area||0), wPx:Math.round(wPx), hPx:Math.round(hPx), aspect, widthM };
 }
 
-// Transient preview crop for on-screen review only — kept in memory for this
-// browser session, never included in export or in the learned profile.
-function capturePreview(t){
+// Shared by capturePreview() and the auto-learn minimum-size gate: the
+// actual native-pixel crop region a track's bounding box maps to, padded
+// the same way the preview thumbnail is.
+function estimateCropPixelSize(t){
   const vw=video.videoWidth, vh=video.videoHeight;
   if(!vw||!vh) return null;
   const sX=vw/PW, sY=vh/PH;
@@ -2287,6 +2371,15 @@ function capturePreview(t){
   const cw=Math.min(vw,bw*pad), ch=Math.min(vh,bh*pad);
   const sxp=Math.max(0,Math.min(vw-cw,cx-cw/2));
   const syp=Math.max(0,Math.min(vh-ch,cy-ch/2));
+  return {cw,ch,sxp,syp};
+}
+
+// Transient preview crop for on-screen review only — kept in memory for this
+// browser session, never included in export or in the learned profile.
+function capturePreview(t){
+  const crop0=estimateCropPixelSize(t);
+  if(!crop0) return null;
+  const {cw,ch,sxp,syp}=crop0;
   // Match the preview's resolution to the actual captured region (up to a
   // cap) instead of a fixed 80px — a hardcoded size either upscaled blurrily
   // for small objects or threw away real detail for large ones/high-res
@@ -2451,8 +2544,17 @@ btnResetLearning.addEventListener('click', () => {
    Trainingsdaten page and approved (or rejected) them.
 ══════════════════════════════════════════ */
 let autoLearnEnabled=true, autoLearnPool=[], pendingAutoSamples=[], autoLearnRounds=0;
-const AUTO_LEARN_POOL_CAP=300, PENDING_CAP=100;
+// Hard cap: the pending queue is never allowed to exceed this. Resume gate:
+// once full, no *new* objects are captured until the queue has been worked
+// down to at most this many — a hysteresis gap instead of a single
+// threshold, so review doesn't get interrupted only to immediately refill
+// back up to the cap after clearing just one item.
+const AUTO_LEARN_POOL_CAP=300, PENDING_CAP=20, PENDING_RESUME_AT=15;
 const CLASS_WIDTH_BOUNDARY_M=[1.0,1.1,2.2], CLASS_BOUNDARY_MARGIN_M=0.12;
+// Minimum native-pixel crop size (the same padded region capturePreview()
+// thumbnails) an object must occupy to be auto-captured — filters out
+// small/distant detections that wouldn't give a useful training image.
+const MIN_CAPTURE_CROP_W=400, MIN_CAPTURE_CROP_H=600;
 
 autoLearnToggle.addEventListener('change', () => {
   autoLearnEnabled=autoLearnToggle.checked;
@@ -2461,8 +2563,14 @@ autoLearnToggle.addEventListener('change', () => {
     : 'Fortlaufendes Lernen pausiert — bereits genehmigte Beispiele/Profil bleiben aktiv, es werden aber keine neuen automatischen Beispiele mehr gesammelt.';
 });
 
+let pendingCapturePaused=false;
 function collectAutoLearnSample(t){
   if(!autoLearnEnabled || !calibration) return; // width-based ground truth needs a real-world scale
+  if(pendingAutoSamples.length>=PENDING_CAP) pendingCapturePaused=true;
+  else if(pendingAutoSamples.length<=PENDING_RESUME_AT) pendingCapturePaused=false;
+  if(pendingCapturePaused) return; // queue full — wait until it's worked down before capturing more
+  const crop=estimateCropPixelSize(t);
+  if(!crop || crop.cw<MIN_CAPTURE_CROP_W || crop.ch<MIN_CAPTURE_CROP_H) return; // too small/distant to be a useful training image
   const wm=measureCalibratedWidthM({cx:t.x, cy:t.y, w:t.w, h:t.h});
   if(!isFinite(wm) || wm<=0) return;
   if(CLASS_WIDTH_BOUNDARY_M.some(b=>Math.abs(wm-b)<CLASS_BOUNDARY_MARGIN_M)) return; // too ambiguous, skip
@@ -2472,7 +2580,7 @@ function collectAutoLearnSample(t){
     capturedAt:new Date().toISOString(), _preview:capturePreview(t)
   };
   pendingAutoSamples.push(ex);
-  if(pendingAutoSamples.length>PENDING_CAP) pendingAutoSamples.splice(0, pendingAutoSamples.length-PENDING_CAP);
+  if(pendingAutoSamples.length>=PENDING_CAP){ pendingAutoSamples.splice(0, pendingAutoSamples.length-PENDING_CAP); pendingCapturePaused=true; }
   renderPendingList();
   saveLearningState();
 }
@@ -2491,7 +2599,13 @@ function renderPendingList(){
     pendingGrid.appendChild(card);
   });
   pendingCount.textContent=pendingAutoSamples.length;
+  btnRejectAllPending.disabled=!pendingAutoSamples.length;
   if(examplesPageCount) examplesPageCount.textContent=`${trainingExamples.length} Beispiel(e) · ${autoLearnPool.length} geprüfte automatische · ${pendingAutoSamples.length} zur Prüfung`;
+  if(autoLearnEnabled){
+    autoLearnStatus.textContent = pendingCapturePaused
+      ? `Erfassung pausiert — Warteschlange voll (max. ${PENDING_CAP}). Wird fortgesetzt, sobald auf ${PENDING_RESUME_AT} oder weniger geprüft wurde.`
+      : 'Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen — sie zählen erst nach Sichtprüfung zur Berechnung.';
+  }
 }
 function approvePendingSample(id){
   const idx=pendingAutoSamples.findIndex(e=>e.id===id);
@@ -2499,15 +2613,24 @@ function approvePendingSample(id){
   const [ex]=pendingAutoSamples.splice(idx,1);
   autoLearnPool.push({label:ex.label, feat:ex.feat});
   if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
+  if(pendingAutoSamples.length<=PENDING_RESUME_AT) pendingCapturePaused=false;
   renderPendingList();
   renderExampleList();
   recomputeLearnedProfile();
 }
 function rejectPendingSample(id){
   pendingAutoSamples=pendingAutoSamples.filter(e=>e.id!==id);
+  if(pendingAutoSamples.length<=PENDING_RESUME_AT) pendingCapturePaused=false;
   renderPendingList();
   saveLearningState();
 }
+btnRejectAllPending.addEventListener('click', () => {
+  if(!pendingAutoSamples.length) return;
+  pendingAutoSamples=[];
+  pendingCapturePaused=false;
+  renderPendingList();
+  saveLearningState();
+});
 
 /* ══════════════════════════════════════════
    Sichtprüfung pop-up — steps through pendingAutoSamples one at a time
