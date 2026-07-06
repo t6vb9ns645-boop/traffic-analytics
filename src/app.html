@@ -630,7 +630,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       </label>
       <div class="diag-msg" id="autoLearnStatus" style="margin-top:6px;">Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen und verbessert die Klassifizierung laufend im Hintergrund.</div>
     </div>
-    <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert oder exportiert</b>. Die Vorschau unten dient nur der Kontrolle in dieser Sitzung und verschwindet beim Neuladen.</div>
+    <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert, exportiert oder in eine Cloud übertragen</b> (keine Gesichter, keine Kennzeichen — die App hat ohnehin keine Serveranbindung). Die Bild-Vorschau unten dient nur der Kontrolle in dieser Sitzung und verschwindet beim Neuladen. Das <b>Zahlen-Profil selbst bleibt erhalten</b>: es wird lokal in diesem Browser gespeichert (localStorage), damit die Objekterkennung nach einem Neuladen nicht wieder von vorne anfängt.</div>
     <div id="exampleList"></div>
     <div class="row">
       <button id="btnLearnFromExamples" style="flex:1;">🧠 Aus Beispielen lernen</button>
@@ -1243,6 +1243,48 @@ const CLASS_OPTIONS=['Motorrad/Fahrrad','PKW','LKW/Bus','Person','Störung','Son
 let captureMode=false, trainingExamples=[], exampleNextId=1;
 let learnedProfile=null; // {className: {avgWidthM, avgArea, n}} — derived numbers only, no images
 
+/* ══════════════════════════════════════════
+   Local persistence of learning progress — so recognition keeps working
+   across reloads/sessions without needing to re-collect examples every time.
+   ONLY numeric features (label, width/area/aspect) are ever written here,
+   via the browser's own localStorage (on-device, never transmitted anywhere
+   — this app has no backend at all). No image/photo is ever included, so no
+   personally identifiable recording (faces, license plates, ...) is stored
+   or leaves the device, in any form, at any point.
+══════════════════════════════════════════ */
+const LEARNING_STORAGE_KEY='verkehrsanalyse_learning_v1';
+
+function saveLearningState(){
+  try{
+    const payload={
+      learnedProfile,
+      trainingExamples: trainingExamples.map(({id,label,feat,capturedAt,trackId})=>({id,label,feat,capturedAt,trackId})),
+      autoLearnPool,
+      autoLearnRounds,
+      exampleNextId
+    };
+    localStorage.setItem(LEARNING_STORAGE_KEY, JSON.stringify(payload));
+  }catch(e){ /* storage unavailable/full — learning simply won't persist this time, not fatal */ }
+}
+
+function loadLearningState(){
+  try{
+    const raw=localStorage.getItem(LEARNING_STORAGE_KEY);
+    if(!raw) return false;
+    const data=JSON.parse(raw);
+    if(data.learnedProfile) learnedProfile=data.learnedProfile;
+    if(Array.isArray(data.trainingExamples)) trainingExamples=data.trainingExamples.map(ex=>({...ex,_preview:null}));
+    if(Array.isArray(data.autoLearnPool)) autoLearnPool=data.autoLearnPool;
+    if(typeof data.autoLearnRounds==='number') autoLearnRounds=data.autoLearnRounds;
+    if(typeof data.exampleNextId==='number') exampleNextId=data.exampleNextId;
+    return true;
+  }catch(e){ return false; } // corrupted/incompatible data from an older version — ignore, start fresh
+}
+
+function clearLearningState(){
+  try{ localStorage.removeItem(LEARNING_STORAGE_KEY); }catch(e){ /* ignore */ }
+}
+
 // Drawer open/close — reachable from any wizard step, not just Live
 btnTrainingDrawer.addEventListener('click', () => trainingDrawer.classList.add('open'));
 btnCloseDrawer.addEventListener('click', () => trainingDrawer.classList.remove('open'));
@@ -1347,6 +1389,7 @@ function renderExampleList(){
   btnExportExamples.disabled=!has;
   btnClearExamples.disabled=!has;
   exampleCount.textContent=trainingExamples.length;
+  saveLearningState();
 }
 
 // Shared centroid computation (mean real-world width when calibrated, mean
@@ -1383,11 +1426,13 @@ function learnFromExamples(){
   learnedProfile=profile;
   btnResetLearning.disabled=false;
   learnStatus.textContent=`Gelerntes Profil aktiv aus ${trainingExamples.length} Beispiel(en), ${usableClasses} Klasse(n) — wird bei neuen Klassifizierungen bevorzugt genutzt.`;
+  saveLearningState();
 }
 btnLearnFromExamples.addEventListener('click', learnFromExamples);
 btnResetLearning.addEventListener('click', () => {
   learnedProfile=null; btnResetLearning.disabled=true;
   learnStatus.textContent='Gelerntes Profil zurückgesetzt — Standard-Heuristik ist wieder aktiv.';
+  saveLearningState();
 });
 
 /* ══════════════════════════════════════════
@@ -1429,6 +1474,7 @@ function refineAutoLearnedProfile(){
   autoLearnRounds++;
   btnResetLearning.disabled=false;
   learnStatus.textContent=`Fortlaufendes Lernen aktiv: ${autoLearnRounds}. Verfeinerung aus ${autoLearnPool.length} automatisch beobachteten + ${trainingExamples.length} manuellen Beispiel(en), ${usableClasses} Klasse(n).`;
+  saveLearningState();
 }
 
 btnExportExamples.addEventListener('click', () => {
@@ -1445,8 +1491,12 @@ btnExportExamples.addEventListener('click', () => {
   a.click();
 });
 btnClearExamples.addEventListener('click', () => {
-  if(!confirm('Alle gesammelten Beispiele löschen?')) return;
-  trainingExamples=[]; renderExampleList();
+  if(!confirm('Alle gesammelten Beispiele, das automatisch gesammelte Profil und den gespeicherten Lernfortschritt in diesem Browser löschen?')) return;
+  trainingExamples=[]; autoLearnPool=[]; autoLearnRounds=0; learnedProfile=null;
+  btnResetLearning.disabled=true;
+  learnStatus.textContent='Gelerntes Profil zurückgesetzt — Standard-Heuristik ist wieder aktiv.';
+  clearLearningState();
+  renderExampleList();
 });
 
 /* ══════════════════════════════════════════
@@ -2404,6 +2454,18 @@ video.addEventListener('loadedmetadata', sizeOverlay);
 // Init
 updateCalibSummary();
 refreshStepper();
+
+// Restore learning progress from this browser's local storage, if any —
+// recognition keeps working across reloads without ever having sent or kept
+// any image anywhere (only the numeric feature profile is persisted).
+if(loadLearningState()){
+  renderExampleList();
+  if(learnedProfile){
+    btnResetLearning.disabled=false;
+    const usableClasses=Object.keys(learnedProfile).length;
+    learnStatus.textContent=`Gelerntes Profil aus vorheriger Sitzung geladen (${usableClasses} Klasse(n), ${autoLearnRounds} automatische Verfeinerung(en) bisher) — lokal in diesem Browser gespeichert, nie hochgeladen.`;
+  }
+}
 })();
 </script>
 </body>
