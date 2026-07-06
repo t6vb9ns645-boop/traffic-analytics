@@ -4,9 +4,24 @@ Client-seitiger Prototyp zur Verkehrsanalyse per Bewegungserkennung (Frame-Diffe
 
 ## Live-Demo öffnen
 
-Nach Aktivierung von GitHub Pages (siehe unten) ist die App erreichbar unter:
+Die App ist erreichbar unter:
 
 `https://<dein-github-user>.github.io/traffic-analytics/`
+
+Der Zugriff ist **passwortgeschützt**: Die veröffentlichte Seite (`public/index.html`) enthält nur eine per AES-256-GCM verschlüsselte Fassung der App (Schlüssel via PBKDF2-SHA256 aus dem Passwort abgeleitet, 250.000 Iterationen). Erst nach Eingabe des korrekten Passworts wird sie im Browser entschlüsselt und angezeigt. Das Passwort selbst wird nirgends im Repo gespeichert.
+
+**Hinweis zur Sicherheit:** Das ist eine rein clientseitige Zugriffssperre ohne Server/Backend — sie verhindert zuverlässig das beiläufige Lesen des Inhalts ohne Passwort, ist aber kein Ersatz für echte Server-Authentifizierung (ein Angreifer könnte die Ciphertext herunterladen und das Passwort offline per Brute-Force angreifen, falls es schwach ist).
+
+### Passwort ändern / Seite neu bauen
+
+Die eigentliche App liegt unverschlüsselt in `src/app.html` (nur im privaten Repo sichtbar, wird nicht veröffentlicht). Um `public/index.html` mit einem neuen Passwort neu zu erzeugen:
+
+```bash
+node build.js 'NeuesPasswort'
+# oder: SITE_PASSWORD='NeuesPasswort' node build.js
+```
+
+Anschließend `public/index.html` committen und pushen.
 
 ## Funktionen
 
