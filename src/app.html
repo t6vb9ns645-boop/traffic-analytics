@@ -436,19 +436,27 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       <h2 class="step-title">Schritt 3 — Straßenprofil &amp; Kalibrierung</h2>
 
       <div class="step-section">
-        <h3>Automatische Fahrbahnerkennung (aus Standbild)</h3>
+        <h3>🤖 Automatische Kalibrierung (empfohlen, keine Eingabe nötig)</h3>
         <select id="widthPreset">
           <option value="3.0">Regelbreite Innerorts / Landstraße ≈ 3,0 m (RSA 21)</option>
           <option value="3.5">Regelbreite Autobahn ≈ 3,5 m (RAA)</option>
         </select>
+        <button id="btnAutoCalibrate" class="primary" style="width:100%;">🤖 Fahrbahn erkennen &amp; automatisch kalibrieren</button>
+        <div class="diag-msg" id="autoCalibStatus">Noch nicht gestartet.</div>
+        <div class="note">Erkennt die Fahrbahn automatisch aus dem aktuellen Bild und kalibriert sofort — <b>ganz ohne manuelle Eingabe</b>. Die Breite kommt aus dem Regelwert oben; die Tiefe (die aus einem Einzelbild grundsätzlich nicht bestimmbar ist) wird anfangs geschätzt und <b>verfeinert sich automatisch</b>, sobald PKW vorbeifahren — bekannte Durchschnittslänge (≈4,5 m) dient dabei als impliziter Maßstab. Je mehr Fahrzeuge beobachtet werden, desto genauer.</div>
+      </div>
+
+      <div class="step-section">
+        <h3>Fahrbahn manuell prüfen (aus Standbild)</h3>
         <button id="btnAnalyzeLanes" style="width:100%;">📸 Fahrbahn aus aktuellem Standbild analysieren</button>
         <div id="laneAnalysisWrap">
           <canvas id="laneCanvas"></canvas>
           <div class="row">
             <span id="laneStatus" class="diag-msg" style="flex:1;"></span>
-            <button id="btnApplyLaneSuggestion" disabled>✓ Vorschlag übernehmen</button>
+            <button id="btnApplyLaneSuggestion" disabled>✓ Vorschlag übernehmen (mit Eingabe)</button>
           </div>
         </div>
+        <div class="note">Wie oben, zeigt aber erst den Vorschlag zur Kontrolle an und fragt beim Übernehmen nach exakter Breite/Tiefe — für Fälle, in denen die automatische Schätzung nicht genau genug ist.</div>
       </div>
 
       <div class="step-section">
@@ -714,6 +722,8 @@ const cTruck  = document.getElementById('cTruck');
 const cPerson = document.getElementById('cPerson');
 const cNoise  = document.getElementById('cNoise');
 
+const btnAutoCalibrate     = document.getElementById('btnAutoCalibrate');
+const autoCalibStatus      = document.getElementById('autoCalibStatus');
 const btnAnalyzeLanes      = document.getElementById('btnAnalyzeLanes');
 const laneAnalysisWrap     = document.getElementById('laneAnalysisWrap');
 const laneCanvas           = document.getElementById('laneCanvas');
@@ -1599,8 +1609,14 @@ let laneSuggestion=null;
 
 horizonSlider.addEventListener('input', () => horizonVal.textContent=horizonSlider.value+'%');
 
-btnAnalyzeLanes.addEventListener('click', () => {
-  if(!hasSource||video.videoWidth===0){ alert('Bitte zuerst eine Videoquelle laden.'); return; }
+// Shared core: detects the road trapezoid in the current frame (Sobel/marking
+// edges + Hough lines, restricted to the ROI polygon or horizon fallback) and
+// draws the result to laneCanvas for visual feedback. Returns the native-pixel
+// quad on success, or null (with a human-readable reason in .reason) on
+// failure. Used both by the manual "review first" flow and by fully automatic
+// calibration.
+function detectLaneQuad(){
+  if(!hasSource||video.videoWidth===0) return {reason:'Bitte zuerst eine Videoquelle laden.'};
   const LW=320, LH=Math.round(320*video.videoHeight/video.videoWidth);
   laneCanvas.width=LW; laneCanvas.height=LH;
   lctx.drawImage(video,0,0,LW,LH);
@@ -1608,8 +1624,7 @@ btnAnalyzeLanes.addEventListener('click', () => {
   try{ imgData=lctx.getImageData(0,0,LW,LH); }
   catch(e){
     laneAnalysisWrap.classList.add('visible');
-    laneStatus.textContent='Analyse blockiert (CORS). Webcam oder lokale Datei verwenden.';
-    return;
+    return {reason:'Analyse blockiert (CORS). Webcam oder lokale Datei verwenden.'};
   }
   laneAnalysisWrap.classList.add('visible');
   const data=imgData.data;
@@ -1656,13 +1671,11 @@ btnAnalyzeLanes.addEventListener('click', () => {
   lctx.fillStyle='rgba(40,224,197,0.55)';
   for(const [x,y] of candidatePoints) lctx.fillRect(x,y,1,1);
   if(candidatePoints.length<30){
-    laneStatus.textContent=`Zu wenige Kandidatenpunkte (${candidatePoints.length}). ${roiLane?'Analysebereich vergrößern':'Horizont-Slider anpassen'} oder „nur Markierungen“ umschalten.`;
-    btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
+    return {reason:`Zu wenige Kandidatenpunkte (${candidatePoints.length}). ${roiLane?'Analysebereich vergrößern':'Horizont-Slider anpassen'} oder „nur Markierungen“ umschalten.`};
   }
   const lines=houghLines(candidatePoints,LW,LH,10);
   if(lines.length<2){
-    laneStatus.textContent=`Nur ${lines.length} Linie(n) gefunden — mind. 2 nötig. Manuell kalibrieren.`;
-    btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
+    return {reason:`Nur ${lines.length} Linie(n) gefunden — mind. 2 nötig. Manuell kalibrieren.`};
   }
   const regionYs = roiLane ? roiLane.map(p=>p.y) : null;
   const drawTopY  = roiLane ? Math.min(...regionYs) : horizonY;
@@ -1690,8 +1703,7 @@ btnAnalyzeLanes.addEventListener('click', () => {
       if(!best||score>best.score) best={left,right,ns,fs,score};
     }
   if(!best){
-    laneStatus.textContent=`${lines.length} Linien, aber kein plausibles Fahrbahnpaar. Horizont-Grenze anpassen oder manuell kalibrieren.`;
-    btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
+    return {reason:`${lines.length} Linien, aber kein plausibles Fahrbahnpaar. Horizont-Grenze anpassen oder manuell kalibrieren.`};
   }
   const quad=[
     {x:best.left.far,y:farY},{x:best.right.far,y:farY},
@@ -1704,9 +1716,18 @@ btnAnalyzeLanes.addEventListener('click', () => {
   quad.forEach(p=>{lctx.fillStyle='#28e0c5';lctx.beginPath();lctx.arc(p.x,p.y,4,0,Math.PI*2);lctx.fill();});
   const sx=video.videoWidth/LW, sy=video.videoHeight/LH;
   const nativePts=quad.map(p=>({x:p.x*sx,y:p.y*sy}));
-  laneSuggestion={nativePoints:nativePts};
+  return { nativePoints:nativePts, candidateCount:candidatePoints.length, lineCount:lines.length };
+}
+
+btnAnalyzeLanes.addEventListener('click', () => {
+  const res=detectLaneQuad();
+  if(!res || !res.nativePoints){
+    laneStatus.textContent = res?.reason || 'Videoquelle fehlt.';
+    btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
+  }
+  laneSuggestion={nativePoints:res.nativePoints};
   btnApplyLaneSuggestion.disabled=false;
-  laneStatus.textContent=`Vorschlag: ${candidatePoints.length} Kandidatenpunkte, ${lines.length} Linien erkannt — bitte Viereck prüfen, dann übernehmen.`;
+  laneStatus.textContent=`Vorschlag: ${res.candidateCount} Kandidatenpunkte, ${res.lineCount} Linien erkannt — bitte Viereck prüfen, dann übernehmen.`;
 });
 
 btnApplyLaneSuggestion.addEventListener('click', () => {
@@ -1716,6 +1737,74 @@ btnApplyLaneSuggestion.addEventListener('click', () => {
   const lIn=window.prompt('Reale Tiefe in Metern (zwischen den beiden Bildzeilen — bitte messen):','10');
   const length=parseFloat((lIn||'').replace(',','.'));
   applyCalibrationFromPoints(laneSuggestion.nativePoints,width,length);
+});
+
+/* ══════════════════════════════════════════
+   Fully automatic calibration — no manual input
+   Width comes from the regulatory preset. Depth/length cannot be recovered
+   from a single image at all (fundamental monocular scale ambiguity), so it
+   starts from a rough placeholder and self-corrects: once real "PKW" tracks
+   are observed, their known average real-world length (~4.5 m) is used as an
+   implicit reference to refine the depth scale — the more vehicles pass, the
+   more accurate it gets.
+══════════════════════════════════════════ */
+const REF_VEHICLE_LENGTH_M = { 'PKW': 4.5 };
+let autoCalibActive=false, autoCalibSamples=[], autoCalibRefinements=0;
+
+function estimateWorldLength(t){
+  // vehicle extent along the calibrated depth axis (bbox height, projected
+  // through the current homography) — same idea as the width calc in
+  // classify(), just the other axis.
+  const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
+  const scaleX=vw/PW, scaleY=vh/PH;
+  const yTop=t.y-(t.h||0)/2, yBot=t.y+(t.h||0)/2;
+  const pTop=applyH(calibration.H, t.x*scaleX, yTop*scaleY);
+  const pBot=applyH(calibration.H, t.x*scaleX, yBot*scaleY);
+  return Math.hypot(pBot.x-pTop.x, pBot.y-pTop.y);
+}
+
+// Called from updateTracks() whenever a track is newly confirmed.
+function collectAutoCalibSample(t){
+  if(!autoCalibActive || !calibration || t.cls!=='PKW') return;
+  const est=estimateWorldLength(t);
+  if(!isFinite(est) || est<=0.2) return; // discard degenerate/near-zero geometry
+  autoCalibSamples.push(est);
+  if(autoCalibSamples.length>=3){
+    const avg=autoCalibSamples.reduce((s,x)=>s+x,0)/autoCalibSamples.length;
+    const ref=REF_VEHICLE_LENGTH_M['PKW'];
+    const rawCorrection=ref/avg;
+    // dampen so a handful of noisy samples can't swing the scale wildly;
+    // converges over several refinement rounds instead of jumping in one step
+    const correction=1+(rawCorrection-1)*0.5;
+    const newLength=calibration.length*correction;
+    const pts=calibration.nativePoints, width=calibration.width;
+    autoCalibSamples=[];
+    autoCalibRefinements++;
+    applyCalibrationFromPoints(pts, width, +newLength.toFixed(2));
+    const stable=Math.abs(correction-1)<0.03;
+    autoCalibStatus.textContent = stable
+      ? `Automatisch kalibriert und stabil (${autoCalibRefinements}. Verfeinerung, Tiefe ≈ ${newLength.toFixed(1)} m).`
+      : `Automatisch kalibriert — wird weiter verfeinert (${autoCalibRefinements}. Verfeinerung, Tiefe ≈ ${newLength.toFixed(1)} m).`;
+  }
+}
+
+btnAutoCalibrate.addEventListener('click', () => {
+  const res=detectLaneQuad();
+  if(!res || !res.nativePoints){
+    autoCalibStatus.textContent=(res?.reason || 'Videoquelle fehlt.')+' Manuelle Kalibrierung verwenden.';
+    return;
+  }
+  const width=parseFloat(widthPreset.value);
+  // arbitrary starting depth guess (same order of magnitude as the width) —
+  // purely a seed value for the homography; collectAutoCalibSample() corrects
+  // it automatically as soon as real vehicles are observed.
+  const initialLengthGuess=width*2;
+  if(applyCalibrationFromPoints(res.nativePoints, width, initialLengthGuess)){
+    autoCalibActive=true; autoCalibSamples=[]; autoCalibRefinements=0;
+    autoCalibStatus.textContent=`Vorläufig kalibriert (Breite ${width} m, Tiefe geschätzt) — wird automatisch genauer, sobald PKW vorbeifahren.`;
+  } else {
+    autoCalibStatus.textContent='Kalibrierung fehlgeschlagen (Punkte kollinear?). Manuell kalibrieren.';
+  }
 });
 
 /* ══════════════════════════════════════════
@@ -2059,7 +2148,7 @@ function updateTracks(blobs){
       if(looksLikeGlassArtifact(t)){if(!t.isArtifact)noiseCount++;t.cls='Störung';t.isArtifact=true;}
       else t.isArtifact=false;
       t.streak=(t.streak||1)+1;
-      if(!t.confirmed&&!t.isArtifact&&t.streak>=CONFIRM_FRAMES){t.confirmed=true;allVehicles.push(t);}
+      if(!t.confirmed&&!t.isArtifact&&t.streak>=CONFIRM_FRAMES){t.confirmed=true;allVehicles.push(t);collectAutoCalibSample(t);}
       if(t.confirmed){
         const gx=Math.min(PW-1,Math.max(0,Math.round(t.x)));
         const gy=Math.min(PH-1,Math.max(0,Math.round(t.y)));
