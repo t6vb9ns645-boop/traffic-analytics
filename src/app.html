@@ -325,6 +325,16 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 }
 #stillCanvas{width:100%;border:1px solid var(--line);border-radius:6px;background:#000;display:none;}
 #mapRefContainer{width:100%;height:360px;border-radius:8px;overflow:hidden;border:1px solid var(--line);background:var(--panel-2);}
+.ref-measure-row{
+  display:flex;align-items:center;gap:6px;padding:6px 0;
+  border-bottom:1px solid var(--line);font-size:11.5px;
+}
+.ref-measure-row:last-child{border-bottom:none;}
+.ref-measure-row .ref-label{
+  font-family:var(--mono);color:var(--accent);font-weight:700;min-width:22px;
+}
+.ref-measure-row .ref-meters{flex:1;color:var(--text);}
+.ref-measure-row button{font-size:10.5px;padding:4px 7px;}
 
 /* Speed-profile chart drawer */
 #speedChartCanvas{width:100%;height:280px;border:1px solid var(--line);border-radius:6px;background:#0a0d10;display:block;}
@@ -575,10 +585,16 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
           <div class="slider-row" style="flex:1;min-width:120px;">
             <label class="diag-msg" for="depthWidthInput">Breite (m)</label>
             <input type="number" id="depthWidthInput" step="0.1" min="0.1" style="width:100%;">
+            <select id="widthFromMeasurementSelect" style="width:100%;">
+              <option value="">Aus gespeicherter Messung …</option>
+            </select>
           </div>
           <div class="slider-row" style="flex:1;min-width:120px;">
             <label class="diag-msg" for="depthLengthInput">Tiefe (m)</label>
             <input type="number" id="depthLengthInput" step="0.1" min="0.1" style="width:100%;">
+            <select id="lengthFromMeasurementSelect" style="width:100%;">
+              <option value="">Aus gespeicherter Messung …</option>
+            </select>
           </div>
         </div>
         <div class="row">
@@ -795,15 +811,21 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
     <button class="ghost" id="btnCloseMapRef">✕</button>
   </div>
   <div class="training-drawer-body">
-    <div class="note">Klicke zwei Punkte auf der Karte (z. B. Anfang und Ende des sichtbaren Kamerabereichs auf der Fahrbahn), um eine <b>unabhängige Referenzstrecke</b> in Metern zu berechnen — als Ergänzung zur Schätzung/Selbstkalibrierung, wenn Straße/Position auf der Karte erkennbar sind. Nutzt <b>OpenStreetMap</b> (offene, freie Kartendaten), wird beim ersten Öffnen von einem CDN nachgeladen (Internetzugriff nötig).</div>
+    <div class="note">Klicke zwei Punkte auf der Karte (z. B. Anfang und Ende des sichtbaren Kamerabereichs auf der Fahrbahn), um eine <b>unabhängige Referenzstrecke</b> in Metern zu berechnen — als Ergänzung zur Schätzung/Selbstkalibrierung, wenn Straße/Position auf der Karte erkennbar sind. Nutzt <b>OpenStreetMap</b> (offene, freie Kartendaten), wird beim ersten Öffnen von einem CDN nachgeladen (Internetzugriff nötig). Mehrere Messungen können gespeichert werden — sie werden fortlaufend alphabetisch bezeichnet (A, B, C, …) und lassen sich unten im Kalibrierungsschritt gezielt als Breite oder Tiefe auswählen.</div>
     <div id="mapRefContainer"></div>
     <div class="diag-msg" id="mapRefStatus">Karte wird geladen …</div>
     <div class="row">
-      <button id="btnMapRefToWidth" style="flex:1;" disabled>→ Als Breite übernehmen</button>
-      <button id="btnMapRefToLength" style="flex:1;" disabled>→ Als Tiefe übernehmen</button>
+      <button id="btnMapRefSave" style="flex:1;" disabled>💾 Messung speichern</button>
+      <button id="btnMapRefReset" style="flex:1;">↺ Zurücksetzen</button>
     </div>
+    <div class="note">Ohne Karte (z. B. offline) lässt sich eine Strecke auch direkt eintragen:</div>
     <div class="row">
-      <button id="btnMapRefReset" style="width:100%;">↺ Punkte zurücksetzen</button>
+      <input type="number" id="manualRefInput" step="0.1" min="0.1" placeholder="Strecke in Metern" style="flex:1;">
+      <button id="btnManualRefSave">💾 Speichern</button>
+    </div>
+    <div class="step-section" style="padding:8px 10px;">
+      <h3>Gespeicherte Messungen</h3>
+      <div id="refMeasurementList" class="diag-msg">Noch keine Messungen gespeichert.</div>
     </div>
   </div>
 </div>
@@ -901,9 +923,13 @@ const btnCloseMapRef    = document.getElementById('btnCloseMapRef');
 const mapRefDrawer      = document.getElementById('mapRefDrawer');
 const mapRefContainer   = document.getElementById('mapRefContainer');
 const mapRefStatus      = document.getElementById('mapRefStatus');
-const btnMapRefToWidth  = document.getElementById('btnMapRefToWidth');
-const btnMapRefToLength = document.getElementById('btnMapRefToLength');
+const btnMapRefSave     = document.getElementById('btnMapRefSave');
 const btnMapRefReset    = document.getElementById('btnMapRefReset');
+const manualRefInput    = document.getElementById('manualRefInput');
+const btnManualRefSave  = document.getElementById('btnManualRefSave');
+const refMeasurementList = document.getElementById('refMeasurementList');
+const widthFromMeasurementSelect  = document.getElementById('widthFromMeasurementSelect');
+const lengthFromMeasurementSelect = document.getElementById('lengthFromMeasurementSelect');
 
 const btnCalibrate         = document.getElementById('btnCalibrate');
 const btnResetCalib        = document.getElementById('btnResetCalib');
@@ -1117,7 +1143,14 @@ let currentView = 'live';
 let hasSource = false, analyzing = false, corsBlocked = false;
 let noiseCount = 0;
 
-const PW = 160, PH = 120;
+// Processing resolution used for frame-differencing/heatmaps. Scales with
+// the actual source resolution (see updateProcessingResolution()) instead
+// of a fixed 160×120 — a fixed size either squashed a higher/wider-res
+// camera image into the wrong aspect ratio or wasted the extra detail a
+// higher-res source could offer, regardless of what was actually selected
+// in Step 1. Capped at PROC_MAX_DIM per axis to keep per-frame cost sane.
+const PROC_MAX_DIM = 240;
+let PW = 160, PH = 120;
 const proc = document.createElement('canvas');
 proc.width = PW; proc.height = PH;
 const pctx = proc.getContext('2d', {willReadFrequently:true});
@@ -1126,6 +1159,24 @@ let bg = null, frameCount = 0, tracks = [], nextId = 1, allVehicles = [];
 let densityGrid = new Float32Array(PW*PH);
 let flowDX = new Float32Array(PW*PH), flowDY = new Float32Array(PW*PH), flowN = new Float32Array(PW*PH);
 let speedSum = new Float32Array(PW*PH), speedN = new Float32Array(PW*PH);
+
+function allocateProcessingBuffers(){
+  proc.width = PW; proc.height = PH;
+  densityGrid = new Float32Array(PW*PH);
+  flowDX = new Float32Array(PW*PH); flowDY = new Float32Array(PW*PH); flowN = new Float32Array(PW*PH);
+  speedSum = new Float32Array(PW*PH); speedN = new Float32Array(PW*PH);
+}
+function updateProcessingResolution(){
+  const vw=video.videoWidth, vh=video.videoHeight;
+  if(!vw || !vh) return;
+  let pw, ph;
+  if(vw >= vh){ pw=PROC_MAX_DIM; ph=Math.max(16, Math.round(PROC_MAX_DIM*vh/vw)); }
+  else { ph=PROC_MAX_DIM; pw=Math.max(16, Math.round(PROC_MAX_DIM*vw/vh)); }
+  if(pw===PW && ph===PH) return;
+  PW=pw; PH=ph;
+  allocateProcessingBuffers();
+  bg=null; frameCount=0; // background model and grids are tied to the old buffer size
+}
 
 /* ══════════════════════════════════════════
    Helpers
@@ -1330,6 +1381,7 @@ video.addEventListener('loadedmetadata', () => {
   const seekable = video.srcObject===null && isFinite(video.duration) && video.duration>0;
   transportRow.style.display = seekable ? 'flex' : 'none';
   updateTimeLabel(); sizeOverlay();
+  updateProcessingResolution();
 });
 video.addEventListener('timeupdate', updateTimeLabel);
 video.addEventListener('play',  () => btnPlayPause.textContent = '⏸ Pause');
@@ -1481,6 +1533,85 @@ function haversineMeters(a,b){
   const s=Math.sin(dLat/2)**2 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLng/2)**2;
   return 2*R*Math.asin(Math.sqrt(s));
 }
+
+/* ══════════════════════════════════════════
+   Named reference measurements — several width/depth distances can be
+   captured (via map or direct manual entry), each labeled alphabetically
+   (A, B, C, …), persisted locally, and picked from a dropdown in the
+   depth-capture form instead of only ever holding a single value.
+══════════════════════════════════════════ */
+const REF_MEASURE_KEY='verkehrsanalyse_refmeasurements_v1';
+let refMeasurements=[], refMeasureCounter=0;
+function loadRefMeasurements(){
+  try{
+    const raw=localStorage.getItem(REF_MEASURE_KEY);
+    if(!raw) return;
+    const data=JSON.parse(raw);
+    refMeasurements=Array.isArray(data.items)?data.items:[];
+    refMeasureCounter=data.counter||refMeasurements.length;
+  }catch(e){ refMeasurements=[]; refMeasureCounter=0; }
+}
+function saveRefMeasurements(){
+  localStorage.setItem(REF_MEASURE_KEY, JSON.stringify({items:refMeasurements, counter:refMeasureCounter}));
+}
+function nextRefLabel(){
+  // Bijective base-26: 0->A, 1->B, …, 25->Z, 26->AA, 27->AB, …
+  let n=refMeasureCounter+1, s='';
+  while(n>0){ n--; s=String.fromCharCode(65+(n%26))+s; n=Math.floor(n/26); }
+  return s;
+}
+function addRefMeasurement(meters, source){
+  const label=nextRefLabel();
+  refMeasureCounter++;
+  refMeasurements.push({label, meters:+meters.toFixed(2), source});
+  saveRefMeasurements();
+  renderRefMeasurements();
+}
+function removeRefMeasurement(label){
+  refMeasurements=refMeasurements.filter(m=>m.label!==label);
+  saveRefMeasurements();
+  renderRefMeasurements();
+}
+function renderRefMeasurements(){
+  // List inside the map drawer, with quick apply/remove per row …
+  refMeasurementList.innerHTML='';
+  if(!refMeasurements.length){
+    refMeasurementList.textContent='Noch keine Messungen gespeichert.';
+  } else {
+    refMeasurements.forEach(m => {
+      const row=document.createElement('div'); row.className='ref-measure-row';
+      const lbl=document.createElement('span'); lbl.className='ref-label'; lbl.textContent=m.label;
+      const val=document.createElement('span'); val.className='ref-meters'; val.textContent=`${m.meters} m (${m.source})`;
+      const bW=document.createElement('button'); bW.textContent='→ Breite'; bW.onclick=()=>{ depthWidthInput.value=m.meters; };
+      const bL=document.createElement('button'); bL.textContent='→ Tiefe'; bL.onclick=()=>{ depthLengthInput.value=m.meters; };
+      const bDel=document.createElement('button'); bDel.className='ghost'; bDel.textContent='✕'; bDel.onclick=()=>removeRefMeasurement(m.label);
+      row.append(lbl,val,bW,bL,bDel);
+      refMeasurementList.appendChild(row);
+    });
+  }
+  // … and the two dropdowns in the depth-capture form, so a saved
+  // measurement can be selected directly on the calibration/video screen.
+  [widthFromMeasurementSelect, lengthFromMeasurementSelect].forEach(sel => {
+    const prev=sel.value;
+    sel.innerHTML='<option value="">Aus gespeicherter Messung …</option>';
+    refMeasurements.forEach(m => {
+      const o=document.createElement('option');
+      o.value=m.label; o.textContent=`${m.label} — ${m.meters} m (${m.source})`;
+      sel.appendChild(o);
+    });
+    if(refMeasurements.some(m=>m.label===prev)) sel.value=prev;
+  });
+}
+loadRefMeasurements();
+renderRefMeasurements();
+widthFromMeasurementSelect.addEventListener('change', () => {
+  const m=refMeasurements.find(r=>r.label===widthFromMeasurementSelect.value);
+  if(m) depthWidthInput.value=m.meters;
+});
+lengthFromMeasurementSelect.addEventListener('change', () => {
+  const m=refMeasurements.find(r=>r.label===lengthFromMeasurementSelect.value);
+  if(m) depthLengthInput.value=m.meters;
+});
 async function ensureMapRef(){
   if(mapRefInstance) return mapRefInstance;
   mapRefStatus.textContent='Lade Karte (einmalig, benötigt Internetzugriff) …';
@@ -1505,11 +1636,12 @@ async function ensureMapRef(){
   mapRefStatus.textContent='Zwei Punkte anklicken (z. B. Anfang/Ende des sichtbaren Bereichs).';
   return mapRefInstance;
 }
+let mapRefCurrentDist=null;
 function onMapRefClick(ev){
   if(mapRefPoints.length>=2){
     mapRefPoints=[]; mapRefMarkers.forEach(m=>mapRefInstance.removeLayer(m)); mapRefMarkers=[];
     if(mapRefLine){ mapRefInstance.removeLayer(mapRefLine); mapRefLine=null; }
-    btnMapRefToWidth.disabled=true; btnMapRefToLength.disabled=true;
+    btnMapRefSave.disabled=true; mapRefCurrentDist=null;
   }
   const pt={lat:ev.latlng.lat, lng:ev.latlng.lng};
   mapRefPoints.push(pt);
@@ -1518,11 +1650,9 @@ function onMapRefClick(ev){
     mapRefStatus.textContent='Punkt 1 gesetzt — zweiten Punkt anklicken.';
   } else {
     mapRefLine=window.L.polyline(mapRefPoints.map(p=>[p.lat,p.lng]), {color:'#28e0c5', dashArray:'5,5'}).addTo(mapRefInstance);
-    const dist=haversineMeters(mapRefPoints[0], mapRefPoints[1]);
-    mapRefStatus.textContent=`Gemessene Strecke: ${dist.toFixed(1)} m — als Breite oder Tiefe übernehmen, oder erneut klicken für eine neue Messung.`;
-    btnMapRefToWidth.disabled=false; btnMapRefToLength.disabled=false;
-    btnMapRefToWidth.dataset.value=dist.toFixed(1);
-    btnMapRefToLength.dataset.value=dist.toFixed(1);
+    mapRefCurrentDist=haversineMeters(mapRefPoints[0], mapRefPoints[1]);
+    mapRefStatus.textContent=`Gemessene Strecke: ${mapRefCurrentDist.toFixed(1)} m — speichern oder erneut klicken für eine weitere Messung.`;
+    btnMapRefSave.disabled=false;
   }
 }
 async function openMapRefDrawer(){
@@ -1545,16 +1675,24 @@ btnCloseMapRef.addEventListener('click', () => mapRefDrawer.classList.remove('op
 btnMapRefReset.addEventListener('click', () => {
   mapRefPoints=[]; mapRefMarkers.forEach(m=>mapRefInstance.removeLayer(m)); mapRefMarkers=[];
   if(mapRefLine){ mapRefInstance.removeLayer(mapRefLine); mapRefLine=null; }
-  btnMapRefToWidth.disabled=true; btnMapRefToLength.disabled=true;
+  btnMapRefSave.disabled=true; mapRefCurrentDist=null;
   mapRefStatus.textContent='Zwei Punkte anklicken (z. B. Anfang/Ende des sichtbaren Bereichs).';
 });
-btnMapRefToWidth.addEventListener('click', () => {
-  depthWidthInput.value=btnMapRefToWidth.dataset.value;
-  mapRefDrawer.classList.remove('open');
+btnMapRefSave.addEventListener('click', () => {
+  if(mapRefCurrentDist==null) return;
+  addRefMeasurement(mapRefCurrentDist, 'Karte');
+  // clear the current pair so the next two clicks start a fresh, separate
+  // measurement instead of overwriting this one
+  mapRefPoints=[]; mapRefMarkers.forEach(m=>mapRefInstance.removeLayer(m)); mapRefMarkers=[];
+  if(mapRefLine){ mapRefInstance.removeLayer(mapRefLine); mapRefLine=null; }
+  btnMapRefSave.disabled=true; mapRefCurrentDist=null;
+  mapRefStatus.textContent='Gespeichert. Weitere zwei Punkte anklicken für die nächste Messung.';
 });
-btnMapRefToLength.addEventListener('click', () => {
-  depthLengthInput.value=btnMapRefToLength.dataset.value;
-  mapRefDrawer.classList.remove('open');
+btnManualRefSave.addEventListener('click', () => {
+  const v=parseFloat((manualRefInput.value||'').replace(',','.'));
+  if(!(v>0)) return;
+  addRefMeasurement(v, 'manuell');
+  manualRefInput.value='';
 });
 
 btnCalibrate.addEventListener('click', () => {
@@ -1788,10 +1926,18 @@ function capturePreview(t){
   const cw=Math.min(vw,bw*pad), ch=Math.min(vh,bh*pad);
   const sxp=Math.max(0,Math.min(vw-cw,cx-cw/2));
   const syp=Math.max(0,Math.min(vh-ch,cy-ch/2));
+  // Match the thumbnail's resolution to the actual captured region (up to a
+  // cap) instead of a fixed 80px — a hardcoded size either upscaled blurrily
+  // for small objects or threw away real detail for large ones/high-res
+  // sources, making the review ("Sichtprüfung") harder to judge accurately.
+  const maxDim=240;
+  let outW, outH;
+  if(cw>=ch){ outW=Math.min(maxDim,Math.round(cw)); outH=Math.max(1,Math.round(outW*ch/cw)); }
+  else { outH=Math.min(maxDim,Math.round(ch)); outW=Math.max(1,Math.round(outH*cw/ch)); }
   const crop=document.createElement('canvas');
-  crop.width=80; crop.height=Math.max(1,Math.round(80*ch/cw));
+  crop.width=outW; crop.height=outH;
   crop.getContext('2d').drawImage(video,sxp,syp,cw,ch,0,0,crop.width,crop.height);
-  return crop.toDataURL('image/jpeg',0.7);
+  return crop.toDataURL('image/jpeg',0.75);
 }
 
 function captureExample(t){
