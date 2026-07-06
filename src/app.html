@@ -266,6 +266,14 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 }
 .training-drawer.drawer-left.open{transform:translateX(0);}
 #stillCanvas{width:100%;border:1px solid var(--line);border-radius:6px;background:#000;display:none;}
+
+/* Speed-profile chart drawer */
+.training-drawer.drawer-wide{width:560px;}
+#speedChartCanvas{width:100%;height:280px;border:1px solid var(--line);border-radius:6px;background:#0a0d10;display:block;}
+#speedChartTable{width:100%;border-collapse:collapse;font-size:10.5px;font-family:var(--mono);}
+#speedChartTable th,#speedChartTable td{padding:4px 7px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;}
+#speedChartTable th:first-child,#speedChartTable td:first-child{text-align:left;}
+#speedChartTable th{color:var(--dim);font-weight:600;text-transform:uppercase;font-size:9.5px;letter-spacing:.05em;}
 .training-drawer-head{
   display:flex;align-items:center;justify-content:space-between;
   padding:14px 16px;border-bottom:1px solid var(--line);flex-shrink:0;
@@ -666,6 +674,24 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
   </div>
 </div>
 
+<!-- ══════════ Geschwindigkeitsprofile je Fahrtrichtung ══════════ -->
+<button class="training-fab" id="btnSpeedChartDrawer" style="bottom:64px;">📊 Geschwindigkeitsprofile</button>
+<div class="training-drawer drawer-wide" id="speedChartDrawer">
+  <div class="training-drawer-head">
+    <h2>Geschwindigkeitsprofile</h2>
+    <button class="ghost" id="btnCloseSpeedChart">✕</button>
+  </div>
+  <div class="training-drawer-body">
+    <div class="note">Geschwindigkeit über die Zeit seit Ersterkennung, je abgeschlossenem Fahrzeug — nach <b>Fahrtrichtung</b> eingefärbt (dünne Linien je Fahrzeug, dicke Linie = Mittelwert). Erfasst zusätzlich die realen Koordinaten je Zeitpunkt (sobald kalibriert), aus denen sich später ein <b>Bewegungsprofil simulieren</b> lässt — enthalten im bestehenden Trajektorien-Export.</div>
+    <button id="btnRefreshSpeedChart" style="width:100%;">🔄 Aktualisieren</button>
+    <canvas id="speedChartCanvas"></canvas>
+    <div class="legend" id="speedChartLegend" style="flex-wrap:wrap;"></div>
+    <div style="overflow-x:auto;">
+      <table id="speedChartTable"></table>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
 'use strict';
@@ -761,6 +787,15 @@ const btnResetLearning     = document.getElementById('btnResetLearning');
 const learnStatus          = document.getElementById('learnStatus');
 const autoLearnToggle      = document.getElementById('autoLearnToggle');
 const autoLearnStatus      = document.getElementById('autoLearnStatus');
+
+const btnSpeedChartDrawer = document.getElementById('btnSpeedChartDrawer');
+const btnCloseSpeedChart  = document.getElementById('btnCloseSpeedChart');
+const speedChartDrawer    = document.getElementById('speedChartDrawer');
+const btnRefreshSpeedChart= document.getElementById('btnRefreshSpeedChart');
+const speedChartCanvas    = document.getElementById('speedChartCanvas');
+const scctx               = speedChartCanvas.getContext('2d');
+const speedChartLegend    = document.getElementById('speedChartLegend');
+const speedChartTable     = document.getElementById('speedChartTable');
 
 const btnStillDrawer      = document.getElementById('btnStillDrawer');
 const btnCloseStillDrawer = document.getElementById('btnCloseStillDrawer');
@@ -2338,14 +2373,17 @@ function updateTracks(blobs){
       const vw=video.videoWidth||PW,vh=video.videoHeight||PH;
       const sX=vw/PW,sY=vh/PH;
       const dtSec=prevHist?Math.max(0.001,(now-prevHist.t)/1000):null;
-      let instSpeed=0, instKmh=null;
+      let instSpeed=0, instKmh=null, worldPos=null;
       if(dtSec){
         instSpeed=Math.hypot(t.dx*sX,t.dy*sY)/dtSec;
         if(calibration){
           const wC=applyH(calibration.H,t.x*sX,t.y*sY);
           const wP=applyH(calibration.H,(t.x-t.dx)*sX,(t.y-t.dy)*sY);
           instKmh=(Math.hypot(wC.x-wP.x,wC.y-wP.y)/dtSec)*3.6;
+          worldPos=wC;
         }
+      } else if(calibration){
+        worldPos=applyH(calibration.H,t.x*sX,t.y*sY);
       }
       t.speedPxS=(t.speedPxS===undefined)?instSpeed:t.speedPxS*0.7+instSpeed*0.3;
       t.maxSpeedPxS=Math.max(t.maxSpeedPxS||0,t.speedPxS);
@@ -2353,7 +2391,15 @@ function updateTracks(blobs){
         t.speedKmh=(t.speedKmh===undefined)?instKmh:t.speedKmh*0.7+instKmh*0.3;
         t.maxSpeedKmh=Math.max(t.maxSpeedKmh||0,t.speedKmh);
       }
-      t.history.push({x:+b.cx.toFixed(1),y:+b.cy.toFixed(1),t:now,speedPxS:Math.round(t.speedPxS),speedKmh:instKmh!==null?+t.speedKmh.toFixed(1):null});
+      // worldX/worldY (meters, only once calibrated) capture the real-ground
+      // trajectory alongside the pixel one, so a movement profile can later be
+      // simulated/replayed in real-world coordinates instead of screen pixels.
+      t.history.push({
+        x:+b.cx.toFixed(1), y:+b.cy.toFixed(1),
+        worldX: worldPos?+worldPos.x.toFixed(2):null,
+        worldY: worldPos?+worldPos.y.toFixed(2):null,
+        t:now, speedPxS:Math.round(t.speedPxS), speedKmh:instKmh!==null?+t.speedKmh.toFixed(1):null
+      });
       if(t.history.length>300) t.history.shift();
       t.missed=0; unmatched.delete(bestI);
       if(looksLikeGlassArtifact(t)){if(!t.isArtifact)noiseCount++;t.cls='Störung';t.isArtifact=true;}
@@ -2539,6 +2585,191 @@ function renderOverlay(){
       octx.fillStyle=`hsl(${hue},85%,60%)`; octx.fill();
     }
   }
+}
+
+/* ══════════════════════════════════════════
+   Speed profile chart, grouped by direction of travel
+   Categorical pair validated for CVD-safe separation on the app's dark
+   surface (node scripts/validate_palette.js "#3987e5,#d95926" --mode dark
+   --surface "#12171c" → all checks pass, worst adjacent ΔE 97.3).
+══════════════════════════════════════════ */
+const DIR_COLORS={A:'#3987e5', B:'#d95926'};
+let speedChartAutoTimer=null, speedChartHoverX=null, speedChartGeom=null;
+
+// Direction is derived from real-world Y (toward vs. away from the camera,
+// via the calibrated ground plane) when calibrated, or from raw screen-space
+// vertical movement otherwise — same two-bucket split either way.
+function vehicleDirection(v){
+  if(!v.history || v.history.length<2) return null;
+  const first=v.history[0], last=v.history[v.history.length-1];
+  if(first.worldY!=null && last.worldY!=null){
+    const d=last.worldY-first.worldY;
+    if(Math.abs(d)<0.15) return null; // negligible net movement — ambiguous
+    return d>0 ? 'A' : 'B';
+  }
+  const dy=last.y-first.y;
+  if(Math.abs(dy)<2) return null;
+  return dy>0 ? 'A' : 'B';
+}
+function directionLabel(dirKey){
+  if(dirKey==null) return '–';
+  if(calibration) return dirKey==='A' ? 'zur Kamera' : 'von Kamera weg';
+  return dirKey==='A' ? 'Bild abwärts' : 'Bild aufwärts';
+}
+
+btnSpeedChartDrawer.addEventListener('click', () => {
+  speedChartDrawer.classList.add('open');
+  renderSpeedChart();
+  if(speedChartAutoTimer) clearInterval(speedChartAutoTimer);
+  speedChartAutoTimer=setInterval(renderSpeedChart, 2000);
+});
+btnCloseSpeedChart.addEventListener('click', () => {
+  speedChartDrawer.classList.remove('open');
+  if(speedChartAutoTimer){ clearInterval(speedChartAutoTimer); speedChartAutoTimer=null; }
+});
+btnRefreshSpeedChart.addEventListener('click', renderSpeedChart);
+speedChartCanvas.addEventListener('mousemove', ev => {
+  const rect=speedChartCanvas.getBoundingClientRect();
+  speedChartHoverX=ev.clientX-rect.left;
+  renderSpeedChart();
+});
+speedChartCanvas.addEventListener('mouseleave', () => { speedChartHoverX=null; renderSpeedChart(); });
+
+function renderSpeedChart(){
+  const W=speedChartCanvas.clientWidth||520, H=280;
+  const dpr=window.devicePixelRatio||1;
+  speedChartCanvas.width=Math.round(W*dpr); speedChartCanvas.height=Math.round(H*dpr);
+  scctx.setTransform(dpr,0,0,dpr,0,0);
+  scctx.clearRect(0,0,W,H);
+
+  const padL=40, padR=14, padT=14, padB=24;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const useKmh=!!calibration;
+
+  const series=[];
+  for(const v of allVehicles){
+    if(!v.history || v.history.length<2) continue;
+    const dir=vehicleDirection(v);
+    if(dir==null) continue;
+    const t0=v.history[0].t;
+    const pts=v.history.map(p=>({t:(p.t-t0)/1000, speed: useKmh?p.speedKmh:p.speedPxS})).filter(p=>p.speed!=null);
+    if(pts.length<2) continue;
+    series.push({dir, id:v.id, points:pts});
+  }
+
+  scctx.font='9.5px monospace';
+  if(!series.length){
+    scctx.fillStyle='#7a8a94';
+    scctx.fillText('Noch keine abgeschlossenen Fahrzeuge mit erkennbarer Richtung.', padL, H/2);
+    speedChartLegend.innerHTML=''; speedChartTable.innerHTML=''; speedChartGeom=null;
+    return;
+  }
+
+  let maxT=0, maxSpeed=0;
+  for(const s of series) for(const p of s.points){ if(p.t>maxT) maxT=p.t; if(p.speed>maxSpeed) maxSpeed=p.speed; }
+  maxT=Math.max(maxT,1);
+  const niceMax=v=>{ const step=v<=10?1:v<=50?5:v<=100?10:25; return Math.ceil(v/step)*step; };
+  maxSpeed=niceMax(Math.max(maxSpeed*1.05,1));
+
+  const xForT=t=>padL+(t/maxT)*plotW;
+  const yForSpeed=s=>padT+plotH-(s/maxSpeed)*plotH;
+
+  scctx.strokeStyle='#232c33'; scctx.lineWidth=1; scctx.fillStyle='#7a8a94';
+  const ySteps=4;
+  for(let i=0;i<=ySteps;i++){
+    const s=maxSpeed*i/ySteps, y=yForSpeed(s);
+    scctx.beginPath(); scctx.moveTo(padL,y); scctx.lineTo(W-padR,y); scctx.stroke();
+    scctx.fillText(String(Math.round(s)), 3, y+3);
+  }
+  scctx.fillText(useKmh?'km/h':'px/s', 3, padT-3);
+  const xSteps=Math.min(6,Math.max(2,Math.round(maxT)));
+  for(let i=0;i<=xSteps;i++){
+    const t=maxT*i/xSteps, x=xForT(t);
+    scctx.fillText(t.toFixed(1)+'s', Math.min(W-padR-24,Math.max(padL,x-12)), H-6);
+  }
+
+  // thin per-vehicle lines — identity here is direction (color), not the
+  // individual vehicle, so no per-line labels
+  for(const s of series){
+    scctx.beginPath();
+    scctx.strokeStyle=DIR_COLORS[s.dir]+'55';
+    scctx.lineWidth=1.5;
+    s.points.forEach((p,i)=>{ const x=xForT(p.t), y=yForSpeed(p.speed); i===0?scctx.moveTo(x,y):scctx.lineTo(x,y); });
+    scctx.stroke();
+  }
+
+  // one bold average-over-time line per direction, with a single direct
+  // end-label — selective labeling, never a number on every point
+  const avgByDir={};
+  for(const dirKey of ['A','B']){
+    const dirSeries=series.filter(s=>s.dir===dirKey);
+    if(!dirSeries.length) continue;
+    const buckets=new Map();
+    for(const s of dirSeries) for(const p of s.points){
+      const key=Math.round(p.t*2)/2;
+      if(!buckets.has(key)) buckets.set(key,[]);
+      buckets.get(key).push(p.speed);
+    }
+    const avgPts=[...buckets.entries()].sort((a,b)=>a[0]-b[0]).map(([t,arr])=>({t,speed:arr.reduce((a,b)=>a+b,0)/arr.length}));
+    if(avgPts.length<2) continue;
+    avgByDir[dirKey]=avgPts;
+    scctx.beginPath();
+    scctx.strokeStyle=DIR_COLORS[dirKey]; scctx.lineWidth=2.5; scctx.lineJoin='round'; scctx.lineCap='round';
+    avgPts.forEach((p,i)=>{ const x=xForT(p.t), y=yForSpeed(p.speed); i===0?scctx.moveTo(x,y):scctx.lineTo(x,y); });
+    scctx.stroke();
+    const last=avgPts[avgPts.length-1];
+    const lx=xForT(last.t), ly=yForSpeed(last.speed);
+    scctx.fillStyle=DIR_COLORS[dirKey]; scctx.font='bold 11px monospace';
+    const label=`Ø ${last.speed.toFixed(0)}`;
+    scctx.fillText(label, Math.min(W-padR-scctx.measureText(label).width, lx+4), Math.max(11,ly-4));
+  }
+
+  speedChartGeom={padL,padR,padT,padB,plotW,plotH,maxT,maxSpeed,useKmh,avgByDir,xForT,yForSpeed};
+
+  // hover crosshair + readout — ships by default on line charts
+  if(speedChartHoverX!=null && speedChartHoverX>=padL && speedChartHoverX<=W-padR){
+    const t=((speedChartHoverX-padL)/plotW)*maxT;
+    scctx.strokeStyle='rgba(219,228,233,0.35)'; scctx.lineWidth=1; scctx.setLineDash([3,3]);
+    scctx.beginPath(); scctx.moveTo(speedChartHoverX,padT); scctx.lineTo(speedChartHoverX,padT+plotH); scctx.stroke();
+    scctx.setLineDash([]);
+    const nearestSpeed=(pts)=>{
+      let best=null,bestD=Infinity;
+      for(const p of pts){ const d=Math.abs(p.t-t); if(d<bestD){bestD=d;best=p;} }
+      return best;
+    };
+    let ty=padT+12, tx=Math.min(W-padR-120, speedChartHoverX+8);
+    scctx.font='10px monospace';
+    scctx.fillStyle='rgba(10,13,16,0.85)'; scctx.fillRect(tx-4,ty-11,124,44);
+    scctx.fillStyle='#dbe4e9'; scctx.fillText(`t = ${t.toFixed(1)}s`, tx, ty);
+    for(const dirKey of ['A','B']){
+      ty+=14;
+      const p=avgByDir[dirKey] && nearestSpeed(avgByDir[dirKey]);
+      scctx.fillStyle=DIR_COLORS[dirKey];
+      scctx.fillText(`${directionLabel(dirKey)}: ${p?p.speed.toFixed(0)+(useKmh?' km/h':' px/s'):'–'}`, tx, ty);
+    }
+  }
+
+  // legend
+  const countA=series.filter(s=>s.dir==='A').length, countB=series.filter(s=>s.dir==='B').length;
+  speedChartLegend.innerHTML=`
+    <span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;">
+      <span style="width:10px;height:10px;border-radius:2px;background:${DIR_COLORS.A};display:inline-block;"></span>${directionLabel('A')} (${countA})
+    </span>
+    <span style="display:inline-flex;align-items:center;gap:5px;">
+      <span style="width:10px;height:10px;border-radius:2px;background:${DIR_COLORS.B};display:inline-block;"></span>${directionLabel('B')} (${countB})
+    </span>`;
+
+  // accessible table view of the same data
+  let rows='<tr><th>ID</th><th>Richtung</th><th>Ø Geschw.</th><th>Max</th><th>Dauer</th></tr>';
+  for(const s of series){
+    const speeds=s.points.map(p=>p.speed);
+    const avg=speeds.reduce((a,b)=>a+b,0)/speeds.length;
+    const max=Math.max(...speeds);
+    const dur=s.points[s.points.length-1].t;
+    const unit=useKmh?' km/h':' px/s';
+    rows+=`<tr><td>${s.id}</td><td>${directionLabel(s.dir)}</td><td>${avg.toFixed(1)}${unit}</td><td>${max.toFixed(1)}${unit}</td><td>${dur.toFixed(1)}s</td></tr>`;
+  }
+  speedChartTable.innerHTML=rows;
 }
 
 video.addEventListener('loadedmetadata', sizeOverlay);
