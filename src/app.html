@@ -1143,13 +1143,17 @@ let currentView = 'live';
 let hasSource = false, analyzing = false, corsBlocked = false;
 let noiseCount = 0;
 
-// Processing resolution used for frame-differencing/heatmaps. Scales with
-// the actual source resolution (see updateProcessingResolution()) instead
-// of a fixed 160×120 — a fixed size either squashed a higher/wider-res
-// camera image into the wrong aspect ratio or wasted the extra detail a
-// higher-res source could offer, regardless of what was actually selected
-// in Step 1. Capped at PROC_MAX_DIM per axis to keep per-frame cost sane.
-const PROC_MAX_DIM = 240;
+// Processing resolution used for frame-differencing/heatmaps — always the
+// source's actual native resolution (see updateProcessingResolution()), so
+// detection covers the full image at full detail regardless of the camera/
+// source resolution. An earlier version forced the longer axis to a fixed
+// 240px, which upscaled small sources for no benefit and, worse, threw away
+// most of the detail of anything larger (e.g. a 1920×1080 source got
+// downsampled 8x to 240×135) — meaning higher-resolution cameras were
+// effectively analyzed at a small fraction of their real image. PROC_HARD_CAP
+// only guards against truly extreme sources (e.g. >4K) to keep the browser
+// from choking; ordinary camera/video resolutions are used at full size.
+const PROC_HARD_CAP = 3840;
 let PW = 160, PH = 120;
 const proc = document.createElement('canvas');
 proc.width = PW; proc.height = PH;
@@ -1169,9 +1173,11 @@ function allocateProcessingBuffers(){
 function updateProcessingResolution(){
   const vw=video.videoWidth, vh=video.videoHeight;
   if(!vw || !vh) return;
-  let pw, ph;
-  if(vw >= vh){ pw=PROC_MAX_DIM; ph=Math.max(16, Math.round(PROC_MAX_DIM*vh/vw)); }
-  else { ph=PROC_MAX_DIM; pw=Math.max(16, Math.round(PROC_MAX_DIM*vw/vh)); }
+  let pw=vw, ph=vh;
+  if(pw>PROC_HARD_CAP || ph>PROC_HARD_CAP){
+    const scale=PROC_HARD_CAP/Math.max(pw,ph);
+    pw=Math.max(16, Math.round(pw*scale)); ph=Math.max(16, Math.round(ph*scale));
+  }
   if(pw===PW && ph===PH) return;
   PW=pw; PH=ph;
   allocateProcessingBuffers();
