@@ -1424,8 +1424,12 @@ function haversineMeters(a,b){
 async function ensureMapRef(){
   if(mapRefInstance) return mapRefInstance;
   mapRefStatus.textContent='Lade Karte (einmalig, benötigt Internetzugriff) …';
+  // Falls das CDN nicht erreichbar ist (Firewall/Adblocker/offline), bliebe der
+  // Container sonst dauerhaft leer ohne Rückmeldung — daher hier explizit
+  // abfangen und einen klaren Fehler statt eines stillen Hängers anzeigen.
   await loadCSS('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css');
   if(!window.L) await loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js');
+  if(!window.L) throw new Error('Leaflet konnte nicht geladen werden.');
   const startLatLng=[51.1657,10.4515]; // Germany, generic default — user pans/zooms to their location
   mapRefInstance=window.L.map(mapRefContainer).setView(startLatLng, 6);
   window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1463,8 +1467,13 @@ function onMapRefClick(ev){
 }
 btnOpenMapRef.addEventListener('click', async () => {
   openToolDrawer(mapRefDrawer);
-  const map=await ensureMapRef();
-  setTimeout(() => map.invalidateSize(), 50); // drawer transition can leave Leaflet with a stale size otherwise
+  try{
+    const map=await ensureMapRef();
+    setTimeout(() => map.invalidateSize(), 250); // wait out the drawer's slide-in transition, else Leaflet keeps a stale size
+  }catch(e){
+    mapRefStatus.textContent='Karte konnte nicht geladen werden (kein Internetzugriff oder CDN blockiert). Selbstkalibrierung/manuelle Eingabe weiterhin möglich.';
+    mapRefInstance=null; // allow retry on next open
+  }
 });
 btnCloseMapRef.addEventListener('click', () => mapRefDrawer.classList.remove('open'));
 btnMapRefReset.addEventListener('click', () => {
