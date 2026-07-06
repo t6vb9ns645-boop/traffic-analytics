@@ -365,6 +365,20 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 }
 #stillCanvas{width:100%;border:1px solid var(--line);border-radius:6px;background:#000;display:none;}
 #mapRefContainer{width:100%;height:360px;border-radius:8px;overflow:hidden;border:1px solid var(--line);background:var(--panel-2);}
+.mpcalib-video-wrap{
+  position:relative;width:100%;aspect-ratio:4/3;background:#000;
+  border-radius:8px;overflow:hidden;border:1px solid var(--line);cursor:crosshair;
+}
+.mpcalib-video-wrap canvas{position:absolute;inset:0;width:100%;height:100%;}
+.mpcalib-map{width:100%;height:100%;min-height:240px;border-radius:8px;overflow:hidden;border:1px solid var(--line);background:var(--panel-2);}
+.mpcalib-point-row{
+  display:flex;align-items:center;gap:6px;padding:6px 0;
+  border-bottom:1px solid var(--line);font-size:11.5px;flex-wrap:wrap;
+}
+.mpcalib-point-row:last-child{border-bottom:none;}
+.mpcalib-point-row .mp-label{font-family:var(--mono);color:var(--accent);font-weight:700;min-width:20px;}
+.mpcalib-point-row .mp-status{flex:1;min-width:120px;color:var(--dim);}
+.mpcalib-point-row button{font-size:10.5px;padding:4px 7px;}
 .ref-measure-row{
   display:flex;align-items:center;gap:6px;padding:6px 0;
   border-bottom:1px solid var(--line);font-size:11.5px;
@@ -583,6 +597,39 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
         <h3>🗺 Kartenreferenz (unabhängige Zusatzmessung)</h3>
         <button id="btnOpenMapRefStandalone" style="width:100%;">🗺 Auf Karte messen</button>
         <div class="note">Miss unabhängig von den Kalibrierungsschritten unten eine reale Strecke auf einer <b>OpenStreetMap</b>-Karte (z. B. die sichtbare Fahrbahnbreite). Die Messung bleibt erhalten und lässt sich weiter unten bei der Tiefenerfassung direkt als Breite/Tiefe übernehmen.</div>
+      </div>
+
+      <div class="step-section">
+        <h3>🎯 Mehrpunkt-Kalibrierung (Video + Karte, präziseste Methode)</h3>
+        <div class="note">Setze beliebig viele markante Punkte (z. B. Fahrbahnmarkierungen, Kanten, Ecken) — <b>zuerst im Videobild</b>, dann direkt danach am selben realen Ort <b>auf der Karte</b>. Aus mind. 4 Punktpaaren wird eine echte Boden-Kalibrierung berechnet (Homographie aus Bildpixeln auf reale Koordinaten) — Grundlage für Größe, Geschwindigkeit, Position und Fahrtrichtung der Objekte. Punkte lassen sich einzeln neu setzen oder löschen.</div>
+        <div class="row" style="align-items:flex-start;">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
+            <div class="diag-msg">Videobild</div>
+            <div class="mpcalib-video-wrap" id="mpcalibVideoWrap">
+              <canvas id="mpcalibVideoCanvas"></canvas>
+            </div>
+            <div class="row">
+              <button id="btnMpcalibRefresh" style="flex:1;">🔄 Bild aktualisieren</button>
+              <button id="btnMpcalibAddPoint" class="primary" style="flex:1;">📍 Neuer Punkt (im Video klicken)</button>
+            </div>
+          </div>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
+            <div class="row" style="align-items:center;">
+              <div class="diag-msg" style="flex:1;">Karte</div>
+              <select id="mpcalibLayerSelect">
+                <option value="osm">Karte (OSM)</option>
+                <option value="sat">Satellit</option>
+              </select>
+            </div>
+            <div id="mpcalibMapContainer" class="mpcalib-map"></div>
+          </div>
+        </div>
+        <div class="diag-msg" id="mpcalibStatus">Noch keine Punkte gesetzt.</div>
+        <div id="mpcalibPointList"></div>
+        <div class="row">
+          <button id="btnMpcalibCompute" class="primary" style="flex:1;" disabled>✓ Kalibrierung berechnen</button>
+          <button id="btnMpcalibResetAll" class="ghost">↺ Alle Punkte löschen</button>
+        </div>
       </div>
 
       <div class="step-section">
@@ -989,6 +1036,16 @@ const btnDepthApply     = document.getElementById('btnDepthApply');
 const btnDepthCancel    = document.getElementById('btnDepthCancel');
 const btnOpenMapRef     = document.getElementById('btnOpenMapRef');
 const btnOpenMapRefStandalone = document.getElementById('btnOpenMapRefStandalone');
+const mpcalibVideoCanvas = document.getElementById('mpcalibVideoCanvas');
+const mpcalibVctx        = mpcalibVideoCanvas.getContext('2d');
+const btnMpcalibRefresh  = document.getElementById('btnMpcalibRefresh');
+const btnMpcalibAddPoint = document.getElementById('btnMpcalibAddPoint');
+const mpcalibLayerSelect = document.getElementById('mpcalibLayerSelect');
+const mpcalibMapContainer= document.getElementById('mpcalibMapContainer');
+const mpcalibStatus      = document.getElementById('mpcalibStatus');
+const mpcalibPointList   = document.getElementById('mpcalibPointList');
+const btnMpcalibCompute  = document.getElementById('btnMpcalibCompute');
+const btnMpcalibResetAll = document.getElementById('btnMpcalibResetAll');
 const btnCloseMapRef    = document.getElementById('btnCloseMapRef');
 const mapRefDrawer      = document.getElementById('mapRefDrawer');
 const mapRefContainer   = document.getElementById('mapRefContainer');
@@ -1321,7 +1378,9 @@ function formatSpeedFull(pxPerSec, kmh){
 
 function updateCalibSummary(){
   if(calibration){
-    const msg = `Kalibriert: ${calibration.width} m × ${calibration.length} m · perspektivisch korrekte Geschwindigkeitsmessung aktiv.`;
+    const msg = calibration.nativePoints
+      ? `Kalibriert: ${calibration.width} m × ${calibration.length} m · perspektivisch korrekte Geschwindigkeitsmessung aktiv.`
+      : `Kalibriert: Mehrpunkt-Kartenreferenz (${calibration.points.length} Punkte, ⌀ Fehler ${calibration.rmsError.toFixed(2)} m) · perspektivisch korrekte Geschwindigkeitsmessung aktiv.`;
     calibStatus.textContent  = msg;
     calibSummary.textContent = msg;
     calibSummary.style.color = 'var(--ok)';
@@ -1779,6 +1838,222 @@ btnManualRefSave.addEventListener('click', () => {
   if(!(v>0)) return;
   addRefMeasurement(v, 'manuell');
   manualRefInput.value='';
+});
+
+/* ══════════════════════════════════════════
+   Multi-point map calibration — the most accurate calibration method: any
+   number of ground-control points, each placed first in the video image
+   then at the same real-world spot on a Leaflet map (OSM or satellite).
+   From >=4 complete pairs a homography (image pixels -> local ground
+   meters) is fit by least squares, giving a real basis for size, speed,
+   position and direction independent of any assumed rectangle shape.
+══════════════════════════════════════════ */
+let mpCalibPoints=[], mpCalibCounter=0;
+let mpCalibArmed=null; // {pointId, side:'video'|'map'}
+let mpCalibMapInstance=null, mpCalibTileLayer=null, mpCalibMarkers={};
+
+function mpCalibNextLabel(){
+  let n=mpCalibCounter+1, s='';
+  while(n>0){ n--; s=String.fromCharCode(65+(n%26))+s; n=Math.floor(n/26); }
+  return s;
+}
+function refreshMpcalibVideoFrame(){
+  const vw=video.videoWidth, vh=video.videoHeight;
+  if(!vw||!vh) return;
+  mpcalibVideoCanvas.width=vw; mpcalibVideoCanvas.height=vh;
+  mpcalibVctx.drawImage(video,0,0,vw,vh);
+  redrawMpcalibVideoPoints();
+}
+function redrawMpcalibVideoPoints(){
+  if(!mpcalibVideoCanvas.width) return;
+  mpCalibPoints.forEach(p => {
+    if(!p.videoPt) return;
+    mpcalibVctx.save();
+    mpcalibVctx.fillStyle='#28e0c5'; mpcalibVctx.strokeStyle='#04211d'; mpcalibVctx.lineWidth=2;
+    mpcalibVctx.beginPath(); mpcalibVctx.arc(p.videoPt.x,p.videoPt.y,6,0,Math.PI*2); mpcalibVctx.fill(); mpcalibVctx.stroke();
+    mpcalibVctx.font='bold 16px monospace'; mpcalibVctx.fillStyle='#28e0c5';
+    mpcalibVctx.fillText(p.label, p.videoPt.x+9, p.videoPt.y-9);
+    mpcalibVctx.restore();
+  });
+}
+async function ensureMpcalibMap(){
+  if(mpCalibMapInstance) return mpCalibMapInstance;
+  await loadCSS('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css');
+  if(!window.L) await loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js');
+  if(!window.L) throw new Error('Leaflet konnte nicht geladen werden.');
+  mpCalibMapInstance=window.L.map(mpcalibMapContainer).setView([51.1657,10.4515], 6);
+  mpCalibTileLayer=window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom:19, attribution:'© OpenStreetMap-Mitwirkende'
+  }).addTo(mpCalibMapInstance);
+  mpCalibMapInstance.on('click', onMpcalibMapClick);
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(
+      pos => mpCalibMapInstance.setView([pos.coords.latitude, pos.coords.longitude], 18),
+      () => {}
+    );
+  }
+  return mpCalibMapInstance;
+}
+mpcalibLayerSelect.addEventListener('change', async () => {
+  const map=await ensureMpcalibMap().catch(()=>null);
+  if(!map) return;
+  map.removeLayer(mpCalibTileLayer);
+  mpCalibTileLayer = mpcalibLayerSelect.value==='sat'
+    ? window.L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom:19, attribution:'Tiles © Esri'
+      })
+    : window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom:19, attribution:'© OpenStreetMap-Mitwirkende'
+      });
+  mpCalibTileLayer.addTo(map);
+});
+function onMpcalibMapClick(ev){
+  if(!mpCalibArmed || mpCalibArmed.side!=='map') return;
+  const p=mpCalibPoints.find(pt=>pt.id===mpCalibArmed.pointId);
+  if(!p) return;
+  p.mapPt={lat:ev.latlng.lat, lng:ev.latlng.lng};
+  mpCalibArmed=null;
+  renderMpcalibPointMarkers();
+  renderMpcalibPointList();
+  mpcalibStatus.textContent=`Punkt ${p.label}: Kartenposition gesetzt.`;
+}
+function renderMpcalibPointMarkers(){
+  if(!mpCalibMapInstance) return;
+  Object.values(mpCalibMarkers).forEach(m=>mpCalibMapInstance.removeLayer(m));
+  mpCalibMarkers={};
+  mpCalibPoints.forEach(p => {
+    if(!p.mapPt) return;
+    const marker=window.L.marker([p.mapPt.lat,p.mapPt.lng]).addTo(mpCalibMapInstance);
+    marker.bindTooltip(p.label, {permanent:true, direction:'top'});
+    mpCalibMarkers[p.id]=marker;
+  });
+}
+function mpcalibVideoCanvasClick(ev){
+  if(!mpCalibArmed || mpCalibArmed.side!=='video') return;
+  const rect=mpcalibVideoCanvas.getBoundingClientRect();
+  const x=(ev.clientX-rect.left)*(mpcalibVideoCanvas.width/rect.width);
+  const y=(ev.clientY-rect.top)*(mpcalibVideoCanvas.height/rect.height);
+  const p=mpCalibPoints.find(pt=>pt.id===mpCalibArmed.pointId);
+  if(!p) return;
+  p.videoPt={x,y};
+  const wasCreating=mpCalibArmed.creating;
+  mpCalibArmed = wasCreating ? {pointId:p.id, side:'map'} : null;
+  redrawMpcalibVideoPoints();
+  renderMpcalibPointList();
+  mpcalibStatus.textContent = wasCreating
+    ? `Punkt ${p.label}: jetzt den gleichen Ort auf der Karte anklicken.`
+    : `Punkt ${p.label}: Videoposition aktualisiert.`;
+}
+mpcalibVideoCanvas.addEventListener('click', mpcalibVideoCanvasClick);
+btnMpcalibRefresh.addEventListener('click', refreshMpcalibVideoFrame);
+btnMpcalibAddPoint.addEventListener('click', async () => {
+  if(!mpcalibVideoCanvas.width) refreshMpcalibVideoFrame();
+  if(!mpcalibVideoCanvas.width){ mpcalibStatus.textContent='Keine Videoquelle geladen.'; return; }
+  await ensureMpcalibMap().catch(()=>{ mpcalibStatus.textContent='Karte konnte nicht geladen werden (kein Internetzugriff oder CDN blockiert) — Video-Punkte lassen sich trotzdem setzen.'; });
+  const p={id:mpCalibCounter, label:mpCalibNextLabel(), videoPt:null, mapPt:null};
+  mpCalibCounter++;
+  mpCalibPoints.push(p);
+  mpCalibArmed={pointId:p.id, side:'video', creating:true};
+  renderMpcalibPointList();
+  mpcalibStatus.textContent=`Punkt ${p.label}: jetzt im Videobild anklicken.`;
+});
+function renderMpcalibPointList(){
+  mpcalibPointList.innerHTML='';
+  mpCalibPoints.forEach(p => {
+    const row=document.createElement('div'); row.className='mpcalib-point-row';
+    const lbl=document.createElement('span'); lbl.className='mp-label'; lbl.textContent=p.label;
+    const status=document.createElement('span'); status.className='mp-status';
+    status.textContent = `Video: ${p.videoPt?'✓':'—'} · Karte: ${p.mapPt?'✓':'—'}`;
+    const bVideo=document.createElement('button');
+    bVideo.textContent=p.videoPt?'🖊 Video neu setzen':'📍 Video setzen';
+    bVideo.onclick=() => { mpCalibArmed={pointId:p.id, side:'video', creating:false}; mpcalibStatus.textContent=`Punkt ${p.label}: im Videobild anklicken.`; };
+    const bMap=document.createElement('button');
+    bMap.textContent=p.mapPt?'🖊 Karte neu setzen':'📍 Karte setzen';
+    bMap.onclick=async () => { await ensureMpcalibMap().catch(()=>{}); mpCalibArmed={pointId:p.id, side:'map', creating:false}; mpcalibStatus.textContent=`Punkt ${p.label}: auf der Karte anklicken.`; };
+    const bDel=document.createElement('button'); bDel.className='ghost'; bDel.textContent='✕';
+    bDel.onclick=() => {
+      mpCalibPoints=mpCalibPoints.filter(pt=>pt.id!==p.id);
+      if(mpCalibArmed && mpCalibArmed.pointId===p.id) mpCalibArmed=null;
+      redrawMpcalibVideoPoints_full();
+      renderMpcalibPointMarkers();
+      renderMpcalibPointList();
+    };
+    row.append(lbl,status,bVideo,bMap,bDel);
+    mpcalibPointList.appendChild(row);
+  });
+  const complete=mpCalibPoints.filter(p=>p.videoPt&&p.mapPt).length;
+  btnMpcalibCompute.disabled = complete<4;
+  if(!mpCalibPoints.length) mpcalibStatus.textContent='Noch keine Punkte gesetzt.';
+}
+// Deleting a point removes its marker from the video canvas too, which
+// needs a full redraw from the still frame rather than just drawing more.
+function redrawMpcalibVideoPoints_full(){
+  if(!mpcalibVideoCanvas.width) return;
+  mpcalibVctx.drawImage(video,0,0,mpcalibVideoCanvas.width,mpcalibVideoCanvas.height);
+  redrawMpcalibVideoPoints();
+}
+btnMpcalibResetAll.addEventListener('click', () => {
+  mpCalibPoints=[]; mpCalibArmed=null;
+  redrawMpcalibVideoPoints_full();
+  renderMpcalibPointMarkers();
+  renderMpcalibPointList();
+});
+
+// Least-squares homography (image pixels -> local ground meters) for N>=4
+// point pairs, via the normal-equations solve of the same linear system
+// solveHomography() uses for the exact 4-point case — reduces to the exact
+// solution when N===4, and averages out noise/error when N>4.
+function solveHomographyLS(imgPts, worldPts){
+  const A=[], b=[];
+  for(let i=0;i<imgPts.length;i++){
+    const {x,y}=imgPts[i], {x:X,y:Y}=worldPts[i];
+    A.push([x,y,1,0,0,0,-x*X,-y*X]); b.push(X);
+    A.push([0,0,0,x,y,1,-x*Y,-y*Y]); b.push(Y);
+  }
+  const n=8;
+  const AtA=Array.from({length:n},()=>new Array(n).fill(0));
+  const Atb=new Array(n).fill(0);
+  for(let r=0;r<A.length;r++){
+    for(let i=0;i<n;i++){
+      Atb[i]+=A[r][i]*b[r];
+      for(let j=0;j<n;j++) AtA[i][j]+=A[r][i]*A[r][j];
+    }
+  }
+  const h=gaussSolve(AtA,Atb); if(!h) return null;
+  return [[h[0],h[1],h[2]],[h[3],h[4],h[5]],[h[6],h[7],1]];
+}
+function latLngToLocalMeters(lat,lng,lat0,lng0){
+  const R=6371000, toRad=d=>d*Math.PI/180;
+  return {
+    x:(lng-lng0)*toRad(1)*R*Math.cos(toRad(lat0)),
+    y:(lat-lat0)*toRad(1)*R
+  };
+}
+btnMpcalibCompute.addEventListener('click', () => {
+  const complete=mpCalibPoints.filter(p=>p.videoPt&&p.mapPt);
+  if(complete.length<4){ mpcalibStatus.textContent='Mindestens 4 vollständige Punktpaare nötig.'; return; }
+  const lat0=complete.reduce((s,p)=>s+p.mapPt.lat,0)/complete.length;
+  const lng0=complete.reduce((s,p)=>s+p.mapPt.lng,0)/complete.length;
+  const worldPts=complete.map(p=>latLngToLocalMeters(p.mapPt.lat,p.mapPt.lng,lat0,lng0));
+  const imgPts=complete.map(p=>p.videoPt);
+  const H=solveHomographyLS(imgPts,worldPts);
+  const Hinv=H?invert3x3(H):null;
+  if(!H||!Hinv){ mpcalibStatus.textContent='Kalibrierung fehlgeschlagen (Punkte zu kollinear/ungültig) — andere Punkte wählen.'; return; }
+  let sqErr=0;
+  complete.forEach((p,i) => {
+    const proj=applyH(H,imgPts[i].x,imgPts[i].y);
+    sqErr += (proj.x-worldPts[i].x)**2 + (proj.y-worldPts[i].y)**2;
+  });
+  const rmsError=Math.sqrt(sqErr/complete.length);
+  calibration={
+    H, Hinv, method:'multi-point-map', rmsError,
+    points: complete.map(p=>({label:p.label, videoPt:p.videoPt, lat:p.mapPt.lat, lng:p.mapPt.lng})),
+    nativePoints:null, width:null, length:null
+  };
+  autoCalibActive=false; // not applicable to an arbitrary ground-control-point set
+  btnResetCalib.disabled=false;
+  updateCalibSummary();
+  mpcalibStatus.textContent=`Kalibrierung berechnet aus ${complete.length} Punkten — mittlerer Fehler ${rmsError.toFixed(2)} m.`;
 });
 
 btnCalibrate.addEventListener('click', () => {
@@ -2912,10 +3187,14 @@ btnExport.addEventListener('click', () => {
     processingResolution:{width:PW,height:PH},
     trackedClasses: [...trackedClasses],
     analysisRegion: roiPolygon ? { points: roiPolygon } : null,
-    calibration: calibration?{
+    calibration: calibration ? (calibration.nativePoints ? {
       method:"4-point homography",
       referenceRectangleMeters:{width:calibration.width,length:calibration.length}
-    }:null,
+    } : {
+      method:"multi-point-map",
+      groundControlPoints: calibration.points.map(p=>({label:p.label, lat:p.lat, lng:p.lng})),
+      rmsErrorMeters: calibration.rmsError
+    }) : null,
     vehicles: allVehicles.map(v=>{
       const ks=v.history.map(p=>p.speedKmh).filter(s=>s!=null);
       return {
@@ -3043,7 +3322,7 @@ function looksLikeGlassArtifact(t){
   const aspect=t.w>=t.h?t.w/t.h:t.h/t.w;
   const minA=parseInt(minAreaSlider.value,10);
   if(!(aspect<1.5&&t.area<minA*3)) return false;
-  if(!calibration||t.history.length<4) return false;
+  if(!calibration||!calibration.nativePoints||t.history.length<4) return false;
   const p0=t.history[0], p1=t.history[t.history.length-1];
   const dx=p1.x-p0.x, dy=p1.y-p0.y;
   if(Math.hypot(dx,dy)<2) return false;
@@ -3394,7 +3673,9 @@ function renderOverlay(){
     octx.closePath(); octx.stroke(); octx.restore();
   }
 
-  if(currentView==='live'&&calibration){
+  if(currentView==='live'&&calibration&&calibration.nativePoints){
+    // Rectangle grid overlay — only meaningful for the 4-point-rectangle
+    // method, where nativePoints/width/length describe an actual rectangle.
     const pts=calibration.nativePoints.map(p=>nativeToDisplay(p.x,p.y));
     octx.save(); octx.setLineDash([5,4]); octx.strokeStyle='#ffb020'; octx.lineWidth=1.5;
     octx.beginPath();
@@ -3414,6 +3695,15 @@ function renderOverlay(){
       const da=nativeToDisplay(a.x,a.y),dc=nativeToDisplay(c.x,c.y);
       octx.beginPath();octx.moveTo(da.x,da.y);octx.lineTo(dc.x,dc.y);octx.stroke();
     }
+  } else if(currentView==='live'&&calibration&&calibration.points){
+    // Multi-point map calibration — just mark the ground-control points used.
+    octx.save(); octx.fillStyle='#ffb020'; octx.font='10px monospace';
+    calibration.points.forEach(p => {
+      const d=nativeToDisplay(p.videoPt.x,p.videoPt.y);
+      octx.beginPath(); octx.arc(d.x,d.y,4,0,Math.PI*2); octx.fill();
+      octx.fillText(p.label,d.x+6,d.y-6);
+    });
+    octx.restore();
   }
 
   if(currentView==='flow'){
@@ -3679,7 +3969,15 @@ function renderSpeedChart3D(){
   let maxSpeed=1;
   for(const s of series) for(const p of s.points) if(p.speedKmh>maxSpeed) maxSpeed=p.speedKmh;
   const zScale=60/maxSpeed; // px per km/h of "height"
-  const w=calibration.width, len=calibration.length;
+  // Multi-point map calibration has no fixed reference rectangle — fall back
+  // to a bounding box derived from the actual tracked ground coordinates so
+  // the chart still has a sensible ground extent to draw against.
+  let w=calibration.width, len=calibration.length;
+  if(w==null || len==null){
+    let maxX=1, maxY=1;
+    for(const s of series) for(const p of s.points){ maxX=Math.max(maxX,Math.abs(p.worldX)); maxY=Math.max(maxY,Math.abs(p.worldY)); }
+    w=maxX*2; len=maxY*2;
+  }
 
   // fit the projected ground rectangle (plus a margin for the tallest speed
   // spike) into the canvas
