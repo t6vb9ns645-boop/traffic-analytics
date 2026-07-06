@@ -880,6 +880,26 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       </div>
     </div>
 
+    <div class="sb-section">
+      <div class="sb-head">Reflexionszonen (Nachtmodus)</div>
+      <div class="sb-body">
+        <button id="btnReflectionZoneMode" style="width:100%;">🚫 Reflexionszone markieren: Aus</button>
+        <div id="reflectionZoneList"></div>
+        <button id="btnClearReflectionZones" class="ghost" disabled style="width:100%;">🗑 Alle Zonen löschen</button>
+        <div class="diag-msg">Aktivieren, dann einen Bereich (z. B. eine Pfütze, eine Lichtquelle) mit der Maus aufziehen — Erkennungen darin zählen fortan nicht mehr als Objekte, in Tag- und Nachtmodus.</div>
+      </div>
+    </div>
+
+    <div class="sb-section">
+      <div class="sb-head">Erwartete Objekt-Eintrittsbereiche</div>
+      <div class="sb-body">
+        <button id="btnEntryZoneMode" style="width:100%;">📍 Eintrittsbereich markieren: Aus</button>
+        <div id="entryZoneList"></div>
+        <button id="btnClearEntryZones" class="ghost" disabled style="width:100%;">🗑 Alle Zonen löschen</button>
+        <div class="diag-msg">Markiere Bereiche am Bildrand, an denen neue Objekte am wahrscheinlichsten auftauchen (z. B. eine einmündende Straße) — Objekte, die dort erscheinen, werden schneller bestätigt statt erst nach mehreren Frames.</div>
+      </div>
+    </div>
+
     <div style="margin-top:auto;flex-shrink:0;display:flex;flex-direction:column;gap:5px;">
       <button class="ghost" id="btnBackToSettings" style="width:100%;font-size:11px;">← Einstellungen</button>
     </div>
@@ -1183,6 +1203,12 @@ const btnCalibAdjustCancel  = document.getElementById('btnCalibAdjustCancel');
 const calibAdjustStatus     = document.getElementById('calibAdjustStatus');
 const maxObjectsSlider      = document.getElementById('maxObjectsSlider');
 const maxObjectsVal         = document.getElementById('maxObjectsVal');
+const btnReflectionZoneMode = document.getElementById('btnReflectionZoneMode');
+const reflectionZoneList    = document.getElementById('reflectionZoneList');
+const btnClearReflectionZones = document.getElementById('btnClearReflectionZones');
+const btnEntryZoneMode      = document.getElementById('btnEntryZoneMode');
+const entryZoneList         = document.getElementById('entryZoneList');
+const btnClearEntryZones    = document.getElementById('btnClearEntryZones');
 const captureStatus     = document.getElementById('captureStatus');
 const btnToolsMenu = document.getElementById('btnToolsMenu');
 const toolsMenu     = document.getElementById('toolsMenu');
@@ -1643,15 +1669,41 @@ seekSlider.addEventListener('input',  () => {
 /* ══════════════════════════════════════════
    Calibration (homography)
 ══════════════════════════════════════════ */
-function displayToNative(px,py){
+// The <video> (and overlay canvas on top of it) fill their box with
+// object-fit:contain, so whenever the video's native aspect ratio doesn't
+// match the box's aspect ratio, the actual rendered video pixels occupy a
+// letterboxed/pillarboxed sub-rectangle of that box, not the full box.
+// displayToNative()/nativeToDisplay() must map through that sub-rectangle
+// (not the full bounding rect) for click/drag marking to land exactly on
+// the visible image, independent of resolution or aspect-ratio changes.
+function getVideoContentRect(){
   const rect=overlay.getBoundingClientRect();
-  const vw=video.videoWidth||rect.width, vh=video.videoHeight||rect.height;
-  return {x:px*(vw/rect.width), y:py*(vh/rect.height)};
+  const vw=video.videoWidth, vh=video.videoHeight;
+  if(!vw||!vh) return {left:0, top:0, width:rect.width, height:rect.height};
+  const boxAR=rect.width/rect.height, vidAR=vw/vh;
+  let width, height, left, top;
+  if(vidAR>boxAR){
+    width=rect.width; height=width/vidAR; left=0; top=(rect.height-height)/2;
+  } else {
+    height=rect.height; width=height*vidAR; top=0; left=(rect.width-width)/2;
+  }
+  return {left, top, width, height};
+}
+function displayToNative(px,py){
+  const vw=video.videoWidth, vh=video.videoHeight;
+  if(!vw||!vh) return {x:px, y:py};
+  const cr=getVideoContentRect();
+  const x=(px-cr.left)*(vw/cr.width), y=(py-cr.top)*(vh/cr.height);
+  // Clamp so drags that stray into the letterbox bars (or past the box
+  // entirely) still resolve to a point on the actual visible image,
+  // instead of an out-of-range coordinate that gets cut off downstream.
+  return {x:Math.min(vw,Math.max(0,x)), y:Math.min(vh,Math.max(0,y))};
 }
 function nativeToDisplay(nx,ny){
-  const rect=overlay.getBoundingClientRect();
-  const vw=video.videoWidth||rect.width, vh=video.videoHeight||rect.height;
-  return {x:nx*(rect.width/vw), y:ny*(rect.height/vh)};
+  const vw=video.videoWidth, vh=video.videoHeight;
+  if(!vw||!vh) return {x:nx, y:ny};
+  const cr=getVideoContentRect();
+  return {x:cr.left+nx*(cr.width/vw), y:cr.top+ny*(cr.height/vh)};
 }
 
 function solveHomography(imgPts, worldPts){
@@ -2309,6 +2361,16 @@ function disableOtherOverlayModes(except){
     btnDeselectMode.textContent='❌ Objekt abwählen: Aus';
     btnDeselectMode.classList.remove('primary');
   }
+  if(reflectionZoneMode && except!=='reflection'){
+    reflectionZoneMode=false;
+    btnReflectionZoneMode.textContent='🚫 Reflexionszone markieren: Aus';
+    btnReflectionZoneMode.classList.remove('primary');
+  }
+  if(entryZoneMode && except!=='entry'){
+    entryZoneMode=false;
+    btnEntryZoneMode.textContent='📍 Eintrittsbereich markieren: Aus';
+    btnEntryZoneMode.classList.remove('primary');
+  }
 }
 btnCalibAdjustMode.addEventListener('click', () => {
   if(!calibration || !video.videoWidth || !video.videoHeight) return;
@@ -2775,6 +2837,84 @@ function handleDeselectClick(native, dragRect){
     deselectStatus.textContent='Kein Objekt in der Nähe des Klicks gefunden.';
   }
 }
+
+/* ══════════════════════════════════════════
+   Persistent zones, drawn once and reused every frame — unlike a one-off
+   deselect, these keep applying automatically:
+   - reflectionZones: recurring glare/reflection spots (a puddle, a light
+     fixture) — any detection inside is excluded from becoming an object
+     at all, in both day and night mode.
+   - entryZones: likely object-entry points at the frame edge (a road
+     entering the view) — a new track starting inside one is confirmed
+     after fewer frames instead of waiting the usual amount.
+   Stored as fractions (0..1) of the frame so they stay correctly
+   positioned regardless of the source's resolution, the same approach
+   used for calibration points.
+══════════════════════════════════════════ */
+let reflectionZones=[], entryZones=[];
+let reflectionZoneMode=false, entryZoneMode=false;
+const REFLECTION_ZONES_KEY='verkehrsanalyse_reflectionzones_v1';
+const ENTRY_ZONES_KEY='verkehrsanalyse_entryzones_v1';
+function saveReflectionZones(){ try{ localStorage.setItem(REFLECTION_ZONES_KEY, JSON.stringify(reflectionZones)); }catch(e){} }
+function saveEntryZones(){ try{ localStorage.setItem(ENTRY_ZONES_KEY, JSON.stringify(entryZones)); }catch(e){} }
+function loadZones(key){ try{ const raw=localStorage.getItem(key); return raw?JSON.parse(raw):[]; }catch(e){ return []; } }
+reflectionZones=loadZones(REFLECTION_ZONES_KEY);
+entryZones=loadZones(ENTRY_ZONES_KEY);
+
+function addZoneFromNativeRect(zones, n0, n1, save, render){
+  const vw=video.videoWidth, vh=video.videoHeight;
+  if(!vw||!vh) return;
+  zones.push({
+    x0:Math.min(n0.x,n1.x)/vw, x1:Math.max(n0.x,n1.x)/vw,
+    y0:Math.min(n0.y,n1.y)/vh, y1:Math.max(n0.y,n1.y)/vh
+  });
+  save(); render();
+}
+// A point given in PW/PH (processing-resolution) space — fractions apply
+// identically there since they're relative to the frame either way.
+function pointInZonesPW(cx,cy,zones){
+  const fx=cx/PW, fy=cy/PH;
+  return zones.some(z=>fx>=z.x0&&fx<=z.x1&&fy>=z.y0&&fy<=z.y1);
+}
+function renderZoneList(container, zones, save, render){
+  container.innerHTML='';
+  zones.forEach((z,i) => {
+    const row=document.createElement('div'); row.className='mpcalib-point-row';
+    const lbl=document.createElement('span'); lbl.className='mp-label'; lbl.textContent=String(i+1);
+    const status=document.createElement('span'); status.className='mp-status';
+    status.textContent=`${Math.round(z.x0*100)}–${Math.round(z.x1*100)}% × ${Math.round(z.y0*100)}–${Math.round(z.y1*100)}%`;
+    const bDel=document.createElement('button'); bDel.className='ghost'; bDel.textContent='✕';
+    bDel.onclick=() => { zones.splice(i,1); save(); render(); };
+    row.append(lbl,status,bDel);
+    container.appendChild(row);
+  });
+}
+function renderReflectionZoneList(){
+  renderZoneList(reflectionZoneList, reflectionZones, saveReflectionZones, renderReflectionZoneList);
+  btnClearReflectionZones.disabled=!reflectionZones.length;
+}
+function renderEntryZoneList(){
+  renderZoneList(entryZoneList, entryZones, saveEntryZones, renderEntryZoneList);
+  btnClearEntryZones.disabled=!entryZones.length;
+}
+btnReflectionZoneMode.addEventListener('click', () => {
+  reflectionZoneMode=!reflectionZoneMode;
+  if(reflectionZoneMode) disableOtherOverlayModes('reflection');
+  btnReflectionZoneMode.textContent = reflectionZoneMode ? '🚫 Reflexionszone markieren: An' : '🚫 Reflexionszone markieren: Aus';
+  btnReflectionZoneMode.classList.toggle('primary', reflectionZoneMode);
+  overlay.style.pointerEvents = reflectionZoneMode ? 'auto' : 'none';
+});
+btnEntryZoneMode.addEventListener('click', () => {
+  entryZoneMode=!entryZoneMode;
+  if(entryZoneMode) disableOtherOverlayModes('entry');
+  btnEntryZoneMode.textContent = entryZoneMode ? '📍 Eintrittsbereich markieren: An' : '📍 Eintrittsbereich markieren: Aus';
+  btnEntryZoneMode.classList.toggle('primary', entryZoneMode);
+  overlay.style.pointerEvents = entryZoneMode ? 'auto' : 'none';
+});
+btnClearReflectionZones.addEventListener('click', () => { reflectionZones=[]; saveReflectionZones(); renderReflectionZoneList(); });
+btnClearEntryZones.addEventListener('click', () => { entryZones=[]; saveEntryZones(); renderEntryZoneList(); });
+renderReflectionZoneList();
+renderEntryZoneList();
 
 // Derive a small numeric feature profile from the track — this, not a
 // picture, is what gets stored/exported/used for learning.
@@ -3600,7 +3740,7 @@ overlay.addEventListener('click', ev => {
 let dragSelectStart=null, dragSelectCurrent=null, dragSelectActive=false;
 const DRAG_SELECT_MIN_PX=8; // below this, treat as a plain click rather than a drag
 overlay.addEventListener('mousedown', ev => {
-  if(!(manualCaptureMode || deselectMode)) return;
+  if(!(manualCaptureMode || deselectMode || reflectionZoneMode || entryZoneMode)) return;
   const rect=overlay.getBoundingClientRect();
   dragSelectStart={x:ev.clientX-rect.left, y:ev.clientY-rect.top};
   dragSelectCurrent=dragSelectStart;
@@ -3635,6 +3775,8 @@ window.addEventListener('mouseup', ev => {
   const native={x:dragRect.cx, y:dragRect.cy};
   if(manualCaptureMode) handleManualCaptureClick(native, dragRect);
   else if(deselectMode) handleDeselectClick(native, dragRect);
+  else if(reflectionZoneMode) addZoneFromNativeRect(reflectionZones, n0, n1, saveReflectionZones, renderReflectionZoneList);
+  else if(entryZoneMode) addZoneFromNativeRect(entryZones, n0, n1, saveEntryZones, renderEntryZoneList);
 });
 
 /* ══════════════════════════════════════════
@@ -4288,8 +4430,10 @@ function step(){
         const nearEdge=minX<edgeMarginX||maxX>PW-edgeMarginX||minY<edgeMarginY||maxY>PH-edgeMarginY;
         isEdgeGlare=nearEdge && (brightSum/count)>GLARE_BRIGHTNESS;
       }
-      if(count>=minA&&count<n*0.35&&elong<5.5&&!isEdgeGlare)
-        blobs.push({cx:(minX+maxX)/2,cy:(minY+maxY)/2,w:bw,h:bh,area:count});
+      const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
+      const inReflectionZone=reflectionZones.length && pointInZonesPW(cx,cy,reflectionZones);
+      if(count>=minA&&count<n*0.35&&elong<5.5&&!isEdgeGlare&&!inReflectionZone)
+        blobs.push({cx,cy,w:bw,h:bh,area:count});
     }
   }
 
@@ -4372,7 +4516,8 @@ function updateTracks(blobs){
       if(!t.manualCls && looksLikeGlassArtifact(t)){if(!t.isArtifact)noiseCount++;t.cls='Störung';t.isArtifact=true;}
       else if(!t.manualCls) t.isArtifact=false;
       t.streak=(t.streak||1)+1;
-      if(!t.confirmed&&!t.isArtifact&&t.streak>=CONFIRM_FRAMES){t.confirmed=true;allVehicles.push(t);collectAutoCalibSample(t);collectAutoLearnSample(t);}
+      const confirmFrames=t.inEntryZone?Math.max(1,CONFIRM_FRAMES-2):CONFIRM_FRAMES;
+      if(!t.confirmed&&!t.isArtifact&&t.streak>=confirmFrames){t.confirmed=true;allVehicles.push(t);collectAutoCalibSample(t);collectAutoLearnSample(t);}
       if(t.confirmed){
         const gx=Math.min(PW-1,Math.max(0,Math.round(t.x)));
         const gy=Math.min(PH-1,Math.max(0,Math.round(t.y)));
@@ -4395,6 +4540,11 @@ function updateTracks(blobs){
       x:b.cx,y:b.cy,dx:0,dy:0,area:b.area,w:b.w,h:b.h,
       dispX:b.cx,dispY:b.cy,dispW:b.w,dispH:b.h,
       cls:classify(b),missed:0,streak:1,confirmed:false,
+      // A track that first appears inside a marked entry zone (a spot where
+      // new objects are expected, e.g. a side street entering the frame) is
+      // confirmed after fewer frames, since it's much less likely to be a
+      // spurious detection than one appearing in the middle of the scene.
+      inEntryZone: entryZones.length>0 && pointInZonesPW(b.cx,b.cy,entryZones),
       history:[{x:+b.cx.toFixed(1),y:+b.cy.toFixed(1),t:Date.now(),speedPxS:0,speedKmh:null}],
       firstSeen:new Date().toISOString(),lastSeen:null
     });
