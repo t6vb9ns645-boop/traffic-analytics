@@ -95,7 +95,6 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
        permanently cover the last item in a scrolled-to-the-bottom menu */
     padding-bottom:64px;
   }
-  .video-wrap{aspect-ratio:4/3;}
   footer{flex-shrink:0;}
 }
 
@@ -108,7 +107,11 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
 .video-wrap{
   position:relative;width:100%;background:#000;
   border-radius:8px;overflow:hidden;border:1px solid var(--line);
-  aspect-ratio:4/3;flex-shrink:0;
+  /* Fill whatever vertical space video-col has left instead of forcing a
+     fixed 4:3 height — that forced height could exceed the viewport and
+     force the whole column to scroll. object-fit:contain on the video/
+     canvas below still preserves the real aspect ratio inside this box. */
+  flex:1 1 auto;min-height:140px;
 }
 .video-wrap video,.video-wrap canvas{
   position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;
