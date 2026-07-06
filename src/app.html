@@ -2605,20 +2605,44 @@ function computeFeaturesAtNativePoint(nx,ny,cropW,cropH){
   }
   return { areaPx:Math.round(cropW*cropH), wPx:Math.round(cropW), hPx:Math.round(cropH), aspect, widthM };
 }
-function cropPreviewAtNativePoint(nx,ny,cropW,cropH){
+// nx,ny = crop center, cropW/H = crop size, all in the video's current
+// *native* pixel space — matches computeFeaturesAtNativePoint()'s inputs so
+// the two describe the same region.
+function boxFromCenter(nx,ny,cropW,cropH){
   const vw=video.videoWidth, vh=video.videoHeight;
-  if(!vw||!vh) return null;
   const cw=Math.min(vw,cropW), ch=Math.min(vh,cropH);
-  const sxp=Math.max(0,Math.min(vw-cw,nx-cw/2));
-  const syp=Math.max(0,Math.min(vh-ch,ny-ch/2));
-  const maxDim=480;
+  return { sxp:Math.max(0,Math.min(vw-cw,nx-cw/2)), syp:Math.max(0,Math.min(vh-ch,ny-ch/2)), cw, ch };
+}
+// Manual captures are deliberate and comparatively rare, so unlike the
+// shared automatic-capture preview (capped at 480px for memory/perf) this
+// favors sharpness: if the source is a live webcam, it first tries to grab
+// an actual still photo via the ImageCapture API — many cameras support a
+// materially higher "photo" resolution than whatever the live "video"
+// stream is running at — and falls back to the current video frame (still
+// uncapped up to 1600px) if that's unavailable or fails for any reason.
+async function captureBestPhoto(box){
+  if(!box) return null;
+  let source=video, srcW=video.videoWidth, srcH=video.videoHeight;
+  if(currentStream && window.ImageCapture){
+    try{
+      const track=currentStream.getVideoTracks()[0];
+      const capture=new ImageCapture(track);
+      const blob=await capture.takePhoto();
+      const bitmap=await createImageBitmap(blob);
+      source=bitmap; srcW=bitmap.width; srcH=bitmap.height;
+    }catch(e){ /* no takePhoto support / camera refused — use the video frame instead */ }
+  }
+  const scaleX=srcW/(video.videoWidth||srcW), scaleY=srcH/(video.videoHeight||srcH);
+  const sxp=box.sxp*scaleX, syp=box.syp*scaleY, cw=box.cw*scaleX, ch=box.ch*scaleY;
+  const maxDim=1600;
   let outW,outH;
   if(cw>=ch){ outW=Math.min(maxDim,Math.round(cw)); outH=Math.max(1,Math.round(outW*ch/cw)); }
   else { outH=Math.min(maxDim,Math.round(ch)); outW=Math.max(1,Math.round(outH*cw/ch)); }
-  const crop=document.createElement('canvas');
-  crop.width=outW; crop.height=outH;
-  crop.getContext('2d').drawImage(video,sxp,syp,cw,ch,0,0,crop.width,crop.height);
-  return crop.toDataURL('image/jpeg',0.75);
+  const canvas=document.createElement('canvas');
+  canvas.width=outW; canvas.height=outH;
+  canvas.getContext('2d').drawImage(source,sxp,syp,cw,ch,0,0,outW,outH);
+  if(source!==video && source.close) source.close(); // release the ImageBitmap
+  return canvas.toDataURL('image/jpeg',0.9);
 }
 // Nearest track to a native-pixel point, regardless of confirmed state (a
 // manual click should be able to grab and start following an object even
@@ -2636,11 +2660,11 @@ function nearestTrackToNativePoint(native){
   const tol = best ? Math.max(40,(best.dispW??best.w??20)*sX) : 0;
   return (best && bestD<=tol) ? best : null;
 }
-function handleManualCaptureClick(native, dragRect){
+async function handleManualCaptureClick(native, dragRect){
   if(!hasSource){ manualCaptureStatus.textContent='Keine Videoquelle geladen.'; return; }
   const immediateLabel=manualCaptureClassSelect.value || null; // optional real-time classification
   const track=nearestTrackToNativePoint(native);
-  let feat, preview, trackId=null;
+  let feat, box, trackId=null;
   if(dragRect){
     // The user drew the exact area to use — always honor that size and
     // position regardless of resolution (displayToNative already scaled it
@@ -2649,7 +2673,7 @@ function handleManualCaptureClick(native, dragRect){
     // a nearby track if there is one, so it keeps being followed/can be
     // reclassified live — the manual box only overrides its *measurement*.
     feat=computeFeaturesAtNativePoint(dragRect.cx,dragRect.cy,dragRect.w,dragRect.h);
-    preview=cropPreviewAtNativePoint(dragRect.cx,dragRect.cy,dragRect.w,dragRect.h);
+    box=boxFromCenter(dragRect.cx,dragRect.cy,dragRect.w,dragRect.h);
     feat.cropNativeW=Math.round(dragRect.w); feat.cropNativeH=Math.round(dragRect.h);
     if(track){ trackId=track.id; if(immediateLabel){ track.manualCls=immediateLabel; track.cls=immediateLabel; } }
   } else if(track){
@@ -2660,21 +2684,22 @@ function handleManualCaptureClick(native, dragRect){
     // ties this example back to that ongoing trajectory, and an immediate
     // classification (if chosen) is applied to the live track itself too.
     feat=computeFeatures(track);
-    preview=capturePreview(track);
     trackId=track.id;
     if(immediateLabel){ track.manualCls=immediateLabel; track.cls=immediateLabel; }
-    const crop=estimateCropPixelSize(track);
-    if(crop){ feat.cropNativeW=Math.round(crop.cw); feat.cropNativeH=Math.round(crop.ch); }
+    box=estimateCropPixelSize(track);
+    if(box){ feat.cropNativeW=Math.round(box.cw); feat.cropNativeH=Math.round(box.ch); }
   } else {
     // No tracked object at the click — fall back to a fixed-size crop
     // ("geeignet großer Bildausschnitt", matching the minimum auto-capture
     // size) so an arbitrary point can still be captured. Already clamped
-    // to the video's actual dimensions (see cropPreviewAtNativePoint), so
-    // this degrades gracefully on lower resolutions too.
+    // to the video's actual dimensions, so this degrades gracefully on
+    // lower resolutions too.
     feat=computeFeaturesAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
-    preview=cropPreviewAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
+    box=boxFromCenter(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
     feat.cropNativeW=MIN_CAPTURE_CROP_W; feat.cropNativeH=MIN_CAPTURE_CROP_H;
   }
+  manualCaptureStatus.textContent='Erfasse Foto in bestmöglicher Auflösung …';
+  const preview=await captureBestPhoto(box); // tries the camera's own still-photo capability first, see captureBestPhoto()
   const ex={
     id:exampleNextId++, label:immediateLabel||'Sonstiges', feat, capturedAt:new Date().toISOString(),
     _preview:preview, source:'manual', trackId
@@ -2969,7 +2994,7 @@ let autoLearnEnabled=true, autoLearnPool=[], pendingAutoSamples=[], autoLearnRou
 // PENDING_CAP_MIN..PENDING_CAP_MAX; PENDING_RESUME_AT is always derived as
 // PENDING_CAP-PENDING_RESUME_GAP so the hysteresis rule itself can't be
 // broken by the input, whatever cap is chosen.
-const AUTO_LEARN_POOL_CAP=300;
+const AUTO_LEARN_POOL_CAP=10000; // raised from 300 to let the learned profile draw on far more approved examples
 const PENDING_CAP_MIN=5, PENDING_CAP_MAX=100, PENDING_RESUME_GAP=5;
 let PENDING_CAP=20, PENDING_RESUME_AT=15;
 function setPendingCap(n){
