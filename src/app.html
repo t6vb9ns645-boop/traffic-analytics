@@ -623,6 +623,13 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
     <button class="ghost" id="btnCloseDrawer">✕</button>
   </div>
   <div class="training-drawer-body">
+    <div class="step-section" style="padding:10px 12px;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+        <input type="checkbox" id="autoLearnToggle" checked style="accent-color:var(--accent);">
+        🔁 Fortlaufendes Lernen (automatisch, ohne Klicken)
+      </label>
+      <div class="diag-msg" id="autoLearnStatus" style="margin-top:6px;">Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen und verbessert die Klassifizierung laufend im Hintergrund.</div>
+    </div>
     <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert oder exportiert</b>. Die Vorschau unten dient nur der Kontrolle in dieser Sitzung und verschwindet beim Neuladen.</div>
     <div id="exampleList"></div>
     <div class="row">
@@ -750,6 +757,8 @@ const trainingDrawer    = document.getElementById('trainingDrawer');
 const btnLearnFromExamples = document.getElementById('btnLearnFromExamples');
 const btnResetLearning     = document.getElementById('btnResetLearning');
 const learnStatus          = document.getElementById('learnStatus');
+const autoLearnToggle      = document.getElementById('autoLearnToggle');
+const autoLearnStatus      = document.getElementById('autoLearnStatus');
 
 const btnStillDrawer      = document.getElementById('btnStillDrawer');
 const btnCloseStillDrawer = document.getElementById('btnCloseStillDrawer');
@@ -1340,12 +1349,12 @@ function renderExampleList(){
   exampleCount.textContent=trainingExamples.length;
 }
 
-// Analyze the collected examples into per-class centroids (mean real-world
-// width when calibrated, mean pixel area otherwise) and use that profile
-// preferentially inside classify() going forward — no images involved.
-function learnFromExamples(){
+// Shared centroid computation (mean real-world width when calibrated, mean
+// pixel area otherwise) over a list of {label, feat} samples — used both by
+// the manual "learn from examples" button and by continuous auto-learning.
+function computeProfileFromSamples(samples){
   const byClass={};
-  for(const ex of trainingExamples){
+  for(const ex of samples){
     const key=ex.label;
     if(!byClass[key]) byClass[key]={widthMs:[],areas:[],n:0};
     if(ex.feat.widthM!=null) byClass[key].widthMs.push(ex.feat.widthM);
@@ -1362,6 +1371,11 @@ function learnFromExamples(){
       n: d.n
     };
   }
+  return {profile, usableClasses};
+}
+
+function learnFromExamples(){
+  const {profile,usableClasses}=computeProfileFromSamples(trainingExamples);
   if(usableClasses<2){
     learnStatus.textContent='Zu wenige Beispiele (mind. 3 pro Klasse, mind. 2 Klassen nötig) — Standard-Heuristik bleibt aktiv.';
     return;
@@ -1375,6 +1389,47 @@ btnResetLearning.addEventListener('click', () => {
   learnedProfile=null; btnResetLearning.disabled=true;
   learnStatus.textContent='Gelerntes Profil zurückgesetzt — Standard-Heuristik ist wieder aktiv.';
 });
+
+/* ══════════════════════════════════════════
+   Continuous auto-learning — no manual capture or button click needed.
+   While the analysis runs, confidently-classified vehicles (measured via
+   calibrated real-world width, clear of any class boundary — never via the
+   currently-learned profile itself, to avoid a self-reinforcing feedback
+   loop) are quietly added to a background pool. The learned profile is
+   re-derived every few samples, so detection keeps improving on its own the
+   longer the camera runs.
+══════════════════════════════════════════ */
+let autoLearnEnabled=true, autoLearnPool=[], autoLearnRounds=0;
+const AUTO_LEARN_BATCH=8, AUTO_LEARN_POOL_CAP=300;
+const CLASS_WIDTH_BOUNDARY_M=[1.0,1.1,2.2], CLASS_BOUNDARY_MARGIN_M=0.12;
+
+autoLearnToggle.addEventListener('change', () => {
+  autoLearnEnabled=autoLearnToggle.checked;
+  autoLearnStatus.textContent = autoLearnEnabled
+    ? 'Sammelt automatisch Beispiele aus kalibrierten, eindeutigen Erkennungen und verbessert die Klassifizierung laufend im Hintergrund.'
+    : 'Fortlaufendes Lernen pausiert — bereits gelerntes Profil bleibt aktiv, es werden aber keine neuen automatischen Beispiele mehr gesammelt.';
+});
+
+function collectAutoLearnSample(t){
+  if(!autoLearnEnabled || !calibration) return; // width-based ground truth needs a real-world scale
+  const wm=measureCalibratedWidthM({cx:t.x, cy:t.y, w:t.w, h:t.h});
+  if(!isFinite(wm) || wm<=0) return;
+  if(CLASS_WIDTH_BOUNDARY_M.some(b=>Math.abs(wm-b)<CLASS_BOUNDARY_MARGIN_M)) return; // too ambiguous, skip
+  const label=staticClassifyByWidth(t.h>t.w*1.5, wm);
+  autoLearnPool.push({label, feat:{widthM:+wm.toFixed(2), areaPx:Math.round(t.area||0)}});
+  if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
+  if(autoLearnPool.length%AUTO_LEARN_BATCH===0) refineAutoLearnedProfile();
+}
+
+function refineAutoLearnedProfile(){
+  const combined=[...trainingExamples, ...autoLearnPool];
+  const {profile,usableClasses}=computeProfileFromSamples(combined);
+  if(usableClasses<2) return;
+  learnedProfile=profile;
+  autoLearnRounds++;
+  btnResetLearning.disabled=false;
+  learnStatus.textContent=`Fortlaufendes Lernen aktiv: ${autoLearnRounds}. Verfeinerung aus ${autoLearnPool.length} automatisch beobachteten + ${trainingExamples.length} manuellen Beispiel(en), ${usableClasses} Klasse(n).`;
+}
 
 btnExportExamples.addEventListener('click', () => {
   const payload={
@@ -1937,25 +1992,39 @@ function dilate(mask,w,h){
 const classColor={'Motorrad/Fahrrad':'#c084fc','PKW':'#28e0c5','LKW/Bus':'#ffb020','Person':'#4ade80','Störung':'#5a6570'};
 const CONFIRM_FRAMES=3;
 
+// Real-world width (meters) of a blob's ground-contact edge via the
+// perspective homography — only valid once calibrated. Shared by classify()
+// and the continuous auto-learning ground-truth signal below.
+function measureCalibratedWidthM(blob){
+  const {w,h,cx,cy}=blob;
+  const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
+  const scaleX=vw/PW, scaleY=vh/PH;
+  const yBase=cy+h/2, xL=cx-w/2, xR=cx+w/2;
+  const pL=applyH(calibration.H,xL*scaleX,yBase*scaleY);
+  const pR=applyH(calibration.H,xR*scaleX,yBase*scaleY);
+  return Math.hypot(pR.x-pL.x,pR.y-pL.y);
+}
+// The fixed, documented width bands (never affected by the learned profile)
+// — this is the physically-grounded classifier used both as the final
+// fallback and as the pseudo-label source for auto-learning.
+function staticClassifyByWidth(tall, wm){
+  if(tall&&wm<1.0) return 'Person';
+  if(wm<1.1) return 'Motorrad/Fahrrad';
+  if(wm<2.2) return 'PKW';
+  return 'LKW/Bus';
+}
+
 function classify(blob){
-  const {area,w,h,cx,cy}=blob;
+  const {area,h,w}=blob;
   const minA=parseInt(minAreaSlider.value,10);
   const tall=h>w*1.5;
   if(calibration){
-    const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
-    const scaleX=vw/PW, scaleY=vh/PH;
-    const yBase=cy+h/2, xL=cx-w/2, xR=cx+w/2;
-    const pL=applyH(calibration.H,xL*scaleX,yBase*scaleY);
-    const pR=applyH(calibration.H,xR*scaleX,yBase*scaleY);
-    const wm=Math.hypot(pR.x-pL.x,pR.y-pL.y);
+    const wm=measureCalibratedWidthM(blob);
     if(learnedProfile){
       const cls=nearestLearnedClass(learnedProfile, c => c.avgWidthM, wm);
       if(cls) return cls;
     }
-    if(tall&&wm<1.0) return 'Person';
-    if(wm<1.1) return 'Motorrad/Fahrrad';
-    if(wm<2.2) return 'PKW';
-    return 'LKW/Bus';
+    return staticClassifyByWidth(tall, wm);
   }
   if(learnedProfile){
     const cls=nearestLearnedClass(learnedProfile, c => c.avgArea, area);
@@ -2148,7 +2217,7 @@ function updateTracks(blobs){
       if(looksLikeGlassArtifact(t)){if(!t.isArtifact)noiseCount++;t.cls='Störung';t.isArtifact=true;}
       else t.isArtifact=false;
       t.streak=(t.streak||1)+1;
-      if(!t.confirmed&&!t.isArtifact&&t.streak>=CONFIRM_FRAMES){t.confirmed=true;allVehicles.push(t);collectAutoCalibSample(t);}
+      if(!t.confirmed&&!t.isArtifact&&t.streak>=CONFIRM_FRAMES){t.confirmed=true;allVehicles.push(t);collectAutoCalibSample(t);collectAutoLearnSample(t);}
       if(t.confirmed){
         const gx=Math.min(PW-1,Math.max(0,Math.round(t.x)));
         const gy=Math.min(PH-1,Math.max(0,Math.round(t.y)));
