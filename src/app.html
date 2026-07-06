@@ -120,6 +120,12 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
 .video-wrap video,.video-wrap canvas{
   position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;
 }
+/* The overlay canvas must map 1:1 onto its CSS box (its buffer is kept in
+   sync with the box size by sizeOverlay + a ResizeObserver). With contain,
+   any transient buffer/box aspect mismatch would silently shrink and center
+   all drawings — markings then land somewhere other than where the mouse
+   actually was. fill guarantees buffer pixel (x,y) = CSS pixel (x,y). */
+.video-wrap canvas{object-fit:fill;}
 #srcVideo{z-index:1;}
 #overlay{z-index:2;pointer-events:none;}
 .empty-hint{
@@ -1453,10 +1459,17 @@ function setClock(msg){ clockEl.textContent = msg; }
 
 function sizeOverlay(){
   const rect = video.getBoundingClientRect();
-  overlay.width  = rect.width;
-  overlay.height = rect.height;
+  const w = Math.max(1, Math.round(rect.width)), h = Math.max(1, Math.round(rect.height));
+  if(overlay.width === w && overlay.height === h) return;
+  overlay.width  = w;
+  overlay.height = h;
 }
 window.addEventListener('resize', sizeOverlay);
+// The box can also change size without a window resize (entering Live view,
+// the Bildgröße slider, sidebar/layout shifts). A stale buffer meant every
+// drawing — including drag markings — ended up scaled away from the cursor,
+// so track the element's actual size directly.
+new ResizeObserver(() => { sizeOverlay(); }).observe(video);
 
 // Keeps the tool drawers starting exactly below the header (whose height
 // varies with viewport width / stepper wrapping) so neither can ever overlap
@@ -4596,7 +4609,11 @@ function renderOverlay(){
   const W=overlay.width, H=overlay.height;
   if(!W||!H) return;
   octx.clearRect(0,0,W,H);
-  const sx=W/PW, sy=H/PH;
+  // All processing-space (PW/PH) drawings must land on the letterboxed
+  // video content rectangle, not the full canvas — same mapping the mouse
+  // handlers use via displayToNative(), so drawings and clicks agree.
+  const cr=getVideoContentRect();
+  const sx=cr.width/PW, sy=cr.height/PH, ox=cr.left, oy=cr.top;
 
   if(currentView==='live'){
     for(const t of tracks){
@@ -4605,8 +4622,8 @@ function renderOverlay(){
       const col=classColor[t.cls]||'#28e0c5';
       const bw=Math.max(8,(t.dispW??t.w??10))*sx;
       const bh=Math.max(8,(t.dispH??t.h??10))*sy;
-      const x=((t.dispX??t.x)*sx)-bw/2;
-      const y=((t.dispY??t.y)*sy)-bh/2;
+      const x=ox+((t.dispX??t.x)*sx)-bw/2;
+      const y=oy+((t.dispY??t.y)*sy)-bh/2;
       octx.strokeStyle=col; octx.lineWidth=1.5;
       const r=Math.min(6,bw/2,bh/2);
       octx.beginPath();
@@ -4624,7 +4641,7 @@ function renderOverlay(){
       const hist=t.history.slice(-12);
       if(hist.length>1){
         octx.beginPath(); octx.strokeStyle=col+'66'; octx.lineWidth=1;
-        hist.forEach((p,i)=>{const px=p.x*sx,py=p.y*sy;i===0?octx.moveTo(px,py):octx.lineTo(px,py);});
+        hist.forEach((p,i)=>{const px=ox+p.x*sx,py=oy+p.y*sy;i===0?octx.moveTo(px,py):octx.lineTo(px,py);});
         octx.stroke();
       }
     }
@@ -4637,7 +4654,7 @@ function renderOverlay(){
       const norm=Math.min(1,v/max);
       const [r,g,b]=heatColor(norm);
       octx.fillStyle=`rgba(${r},${g},${b},${0.15+norm*0.65})`;
-      octx.fillRect(x*sx,y*sy,sx+1,sy+1);
+      octx.fillRect(ox+x*sx,oy+y*sy,sx+1,sy+1);
     }
   }
 
@@ -4649,7 +4666,7 @@ function renderOverlay(){
       const norm=Math.min(1,(speedSum[idx]/speedN[idx])/max);
       const [r,g,b]=heatColor(norm);
       octx.fillStyle=`rgba(${r},${g},${b},${0.15+norm*0.65})`;
-      octx.fillRect(x*sx,y*sy,sx+1,sy+1);
+      octx.fillRect(ox+x*sx,oy+y*sy,sx+1,sy+1);
     }
     octx.fillStyle='#dbe4e9'; octx.font='10px monospace';
     octx.fillText('Skala: 0 – '+formatSpeed(max),5,H-6);
@@ -4739,7 +4756,7 @@ function renderOverlay(){
       const mag=Math.hypot(avx,avy); if(mag<0.15) continue;
       const angle=Math.atan2(avy,avx);
       const hue=((angle+Math.PI)/(2*Math.PI))*360;
-      const cxp=x*sx, cyp=y*sy;
+      const cxp=ox+x*sx, cyp=oy+y*sy;
       const len=Math.min(18,6+mag*10);
       octx.strokeStyle=`hsl(${hue},85%,60%)`; octx.lineWidth=2;
       octx.beginPath(); octx.moveTo(cxp,cyp);
