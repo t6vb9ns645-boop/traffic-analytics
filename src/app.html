@@ -227,13 +227,30 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 .capture-active #overlay{cursor:pointer;pointer-events:auto!important;}
 .diag-msg.ok{color:var(--ok);}
 
-/* Training examples */
-.example-row{display:flex;gap:6px;align-items:center;background:var(--panel);
-  border:1px solid var(--line);border-radius:6px;padding:5px;}
-.example-row img{width:44px;height:33px;object-fit:cover;border-radius:4px;flex-shrink:0;}
-.example-row select{flex:1;font-size:10px;padding:4px 6px;}
+/* Training examples — always-reachable drawer, independent of wizard step */
+.training-fab{
+  position:fixed;right:16px;bottom:16px;z-index:200;
+  box-shadow:0 4px 14px rgba(0,0,0,.4);background:var(--panel-2);
+}
+.training-drawer{
+  position:fixed;top:0;right:0;height:100dvh;width:340px;max-width:92vw;
+  background:var(--panel);border-left:1px solid var(--line);z-index:300;
+  display:flex;flex-direction:column;transform:translateX(100%);
+  transition:transform .2s ease;box-shadow:-8px 0 24px rgba(0,0,0,.35);
+}
+.training-drawer.open{transform:translateX(0);}
+.training-drawer-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px;border-bottom:1px solid var(--line);flex-shrink:0;
+}
+.training-drawer-head h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0;}
+.training-drawer-body{padding:14px 16px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;flex:1;min-height:0;}
+.example-row{display:flex;gap:8px;align-items:center;background:var(--panel-2);
+  border:1px solid var(--line);border-radius:6px;padding:6px;}
+.example-row img{width:56px;height:42px;object-fit:cover;border-radius:4px;flex-shrink:0;background:#000;}
+.example-row select{flex:1;font-size:11px;padding:5px 6px;}
 .example-row button{padding:4px 8px;flex-shrink:0;}
-#exampleList{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;}
+#exampleList{display:flex;flex-direction:column;gap:6px;max-height:38vh;overflow-y:auto;}
 
 footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
   font-family:var(--mono);border-top:1px solid var(--line);flex-shrink:0;}
@@ -367,7 +384,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
           <input type="checkbox" id="markingModeToggle" style="accent-color:var(--accent);">
           Nur Fahrbahnmarkierungen (weiß/gelb) statt aller Kanten
         </label>
-        <div class="note">Schließt Gebäude und Himmel von der Fahrbahn-Analyse aus. <b>Markierungs-Modus</b> sucht gezielt nach helleren Linien auf dunklem Untergrund.</div>
+        <div class="note">Schließt Gebäude und Himmel von der Fahrbahn-Analyse aus. <b>Markierungs-Modus</b> sucht gezielt nach helleren Linien auf dunklem Untergrund. <b>Optional:</b> Sobald weiter unten ein Analysebereich definiert ist, orientiert sich die Fahrbahnerkennung an diesem Bereich statt an der Horizont-Grenze.</div>
       </div>
 
       <div class="step-section">
@@ -549,12 +566,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       <div class="sb-head">Trainingsdaten</div>
       <div class="sb-body">
         <button id="btnCaptureMode" style="width:100%;">🏷 Beispiel-Modus: Aus</button>
-        <div class="diag-msg" id="captureStatus">Aktivieren, dann im Video auf ein erkanntes Objekt klicken, um einen beschrifteten Ausschnitt zu speichern.</div>
-        <div id="exampleList"></div>
-        <div class="row">
-          <button id="btnExportExamples" style="flex:1;" disabled>⤓ Beispiele exportieren</button>
-          <button id="btnClearExamples" disabled>🗑</button>
-        </div>
+        <div class="diag-msg" id="captureStatus">Aktivieren, dann im Video auf ein erkanntes Objekt klicken, um es zu erfassen.</div>
       </div>
     </div>
 
@@ -567,6 +579,28 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
 </div><!-- /app-body -->
 
 <footer>Client-seitiger Prototyp · keine Serverkommunikation · JSON-Export direkt API-kompatibel aufgebaut</footer>
+
+<!-- ══════════ Trainingsdaten-Drawer (von jedem Schritt aus erreichbar) ══════════ -->
+<button class="training-fab" id="btnTrainingDrawer">🏷 Beispiele (<span id="exampleCount">0</span>)</button>
+<div class="training-drawer" id="trainingDrawer">
+  <div class="training-drawer-head">
+    <h2>Trainingsdaten</h2>
+    <button class="ghost" id="btnCloseDrawer">✕</button>
+  </div>
+  <div class="training-drawer-body">
+    <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert oder exportiert</b>. Die Vorschau unten dient nur der Kontrolle in dieser Sitzung und verschwindet beim Neuladen.</div>
+    <div id="exampleList"></div>
+    <div class="row">
+      <button id="btnLearnFromExamples" style="flex:1;">🧠 Aus Beispielen lernen</button>
+      <button id="btnResetLearning" disabled>↺</button>
+    </div>
+    <div class="diag-msg" id="learnStatus">Noch kein gelerntes Profil aktiv — Standard-Heuristik wird verwendet.</div>
+    <div class="row">
+      <button id="btnExportExamples" style="flex:1;" disabled>⤓ Profil exportieren (ohne Bilder)</button>
+      <button id="btnClearExamples" disabled>🗑</button>
+    </div>
+  </div>
+</div>
 
 <script>
 (function(){
@@ -650,8 +684,15 @@ const roiStatus    = document.getElementById('roiStatus');
 const btnCaptureMode    = document.getElementById('btnCaptureMode');
 const captureStatus     = document.getElementById('captureStatus');
 const exampleList       = document.getElementById('exampleList');
+const exampleCount      = document.getElementById('exampleCount');
 const btnExportExamples = document.getElementById('btnExportExamples');
 const btnClearExamples  = document.getElementById('btnClearExamples');
+const btnTrainingDrawer = document.getElementById('btnTrainingDrawer');
+const btnCloseDrawer    = document.getElementById('btnCloseDrawer');
+const trainingDrawer    = document.getElementById('trainingDrawer');
+const btnLearnFromExamples = document.getElementById('btnLearnFromExamples');
+const btnResetLearning     = document.getElementById('btnResetLearning');
+const learnStatus          = document.getElementById('learnStatus');
 
 const appBody         = document.getElementById('appBody');
 const cameraDiag      = document.getElementById('cameraDiag');
@@ -1123,6 +1164,11 @@ btnResetRoi.addEventListener('click', () => {
 ══════════════════════════════════════════ */
 const CLASS_OPTIONS=['Motorrad/Fahrrad','PKW','LKW/Bus','Person','Störung','Sonstiges'];
 let captureMode=false, trainingExamples=[], exampleNextId=1;
+let learnedProfile=null; // {className: {avgWidthM, avgArea, n}} — derived numbers only, no images
+
+// Drawer open/close — reachable from any wizard step, not just Live
+btnTrainingDrawer.addEventListener('click', () => trainingDrawer.classList.add('open'));
+btnCloseDrawer.addEventListener('click', () => trainingDrawer.classList.remove('open'));
 
 btnCaptureMode.addEventListener('click', () => {
   captureMode=!captureMode;
@@ -1131,8 +1177,8 @@ btnCaptureMode.addEventListener('click', () => {
   document.body.classList.toggle('capture-active', captureMode);
   overlay.style.pointerEvents = captureMode ? 'auto' : 'none';
   captureStatus.textContent = captureMode
-    ? 'Aktiv: Klicke im Video auf ein erkanntes Objekt, um es zu speichern.'
-    : 'Aktivieren, dann im Video auf ein erkanntes Objekt klicken, um einen beschrifteten Ausschnitt zu speichern.';
+    ? 'Aktiv: Klicke im Video auf ein erkanntes Objekt, um es zu erfassen.'
+    : 'Aktivieren, dann im Video auf ein erkanntes Objekt klicken, um es zu erfassen.';
 });
 function handleCaptureClick(native){
   const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
@@ -1151,9 +1197,28 @@ function handleCaptureClick(native){
   }
   captureExample(best);
 }
-function captureExample(t){
+
+// Derive a small numeric feature profile from the track — this, not a
+// picture, is what gets stored/exported/used for learning.
+function computeFeatures(t){
+  const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
+  const sX=vw/PW, sY=vh/PH;
+  const wPx=(t.w||0)*sX, hPx=(t.h||0)*sY;
+  const aspect = (wPx>0&&hPx>0) ? +((hPx>=wPx?hPx/wPx:wPx/hPx).toFixed(2)) : null;
+  let widthM=null;
+  if(calibration){
+    const yBase=t.y+(t.h||0)/2, xL=t.x-(t.w||0)/2, xR=t.x+(t.w||0)/2;
+    const pL=applyH(calibration.H,xL*sX,yBase*sY), pR=applyH(calibration.H,xR*sX,yBase*sY);
+    widthM=+Math.hypot(pR.x-pL.x,pR.y-pL.y).toFixed(2);
+  }
+  return { areaPx:Math.round(t.area||0), wPx:Math.round(wPx), hPx:Math.round(hPx), aspect, widthM };
+}
+
+// Transient preview crop for on-screen review only — kept in memory for this
+// browser session, never included in export or in the learned profile.
+function capturePreview(t){
   const vw=video.videoWidth, vh=video.videoHeight;
-  if(!vw||!vh) return;
+  if(!vw||!vh) return null;
   const sX=vw/PW, sY=vh/PH;
   const cx=(t.dispX??t.x)*sX, cy=(t.dispY??t.y)*sY;
   const bw=Math.max(16,(t.dispW??t.w??20))*sX, bh=Math.max(16,(t.dispH??t.h??20))*sY;
@@ -1162,19 +1227,29 @@ function captureExample(t){
   const sxp=Math.max(0,Math.min(vw-cw,cx-cw/2));
   const syp=Math.max(0,Math.min(vh-ch,cy-ch/2));
   const crop=document.createElement('canvas');
-  crop.width=160; crop.height=Math.max(1,Math.round(160*ch/cw));
+  crop.width=80; crop.height=Math.max(1,Math.round(80*ch/cw));
   crop.getContext('2d').drawImage(video,sxp,syp,cw,ch,0,0,crop.width,crop.height);
-  const ex={id:exampleNextId++, label:t.cls, image:crop.toDataURL('image/jpeg',0.82), capturedAt:new Date().toISOString(), trackId:t.id};
+  return crop.toDataURL('image/jpeg',0.7);
+}
+
+function captureExample(t){
+  const feat=computeFeatures(t);
+  const ex={
+    id:exampleNextId++, label:t.cls, feat, capturedAt:new Date().toISOString(), trackId:t.id,
+    _preview:capturePreview(t) // session-only, stripped before export
+  };
   trainingExamples.push(ex);
   renderExampleList();
-  captureStatus.textContent=`Beispiel #${ex.id} gespeichert als "${ex.label}". Label bei Bedarf unten anpassen.`;
+  captureStatus.textContent=`Beispiel #${ex.id} erfasst als "${ex.label}" (nur Merkmale, kein Bild gespeichert). Label bei Bedarf unten anpassen.`;
 }
 function renderExampleList(){
   exampleList.innerHTML='';
   trainingExamples.forEach(ex => {
     const row=document.createElement('div');
     row.className='example-row';
-    const img=document.createElement('img'); img.src=ex.image;
+    const img=document.createElement('img');
+    img.src=ex._preview || '';
+    img.alt='Vorschau (nur diese Sitzung)';
     const sel=document.createElement('select');
     CLASS_OPTIONS.forEach(c=>{
       const o=document.createElement('option'); o.value=c; o.textContent=c;
@@ -1194,16 +1269,56 @@ function renderExampleList(){
   const has=trainingExamples.length>0;
   btnExportExamples.disabled=!has;
   btnClearExamples.disabled=!has;
+  exampleCount.textContent=trainingExamples.length;
 }
+
+// Analyze the collected examples into per-class centroids (mean real-world
+// width when calibrated, mean pixel area otherwise) and use that profile
+// preferentially inside classify() going forward — no images involved.
+function learnFromExamples(){
+  const byClass={};
+  for(const ex of trainingExamples){
+    const key=ex.label;
+    if(!byClass[key]) byClass[key]={widthMs:[],areas:[],n:0};
+    if(ex.feat.widthM!=null) byClass[key].widthMs.push(ex.feat.widthM);
+    byClass[key].areas.push(ex.feat.areaPx);
+    byClass[key].n++;
+  }
+  const profile={}; let usableClasses=0;
+  for(const [cls,d] of Object.entries(byClass)){
+    if(d.n<3) continue; // need a minimum sample size per class to trust it
+    usableClasses++;
+    profile[cls]={
+      avgWidthM: d.widthMs.length ? d.widthMs.reduce((s,x)=>s+x,0)/d.widthMs.length : null,
+      avgArea: d.areas.reduce((s,x)=>s+x,0)/d.areas.length,
+      n: d.n
+    };
+  }
+  if(usableClasses<2){
+    learnStatus.textContent='Zu wenige Beispiele (mind. 3 pro Klasse, mind. 2 Klassen nötig) — Standard-Heuristik bleibt aktiv.';
+    return;
+  }
+  learnedProfile=profile;
+  btnResetLearning.disabled=false;
+  learnStatus.textContent=`Gelerntes Profil aktiv aus ${trainingExamples.length} Beispiel(en), ${usableClasses} Klasse(n) — wird bei neuen Klassifizierungen bevorzugt genutzt.`;
+}
+btnLearnFromExamples.addEventListener('click', learnFromExamples);
+btnResetLearning.addEventListener('click', () => {
+  learnedProfile=null; btnResetLearning.disabled=true;
+  learnStatus.textContent='Gelerntes Profil zurückgesetzt — Standard-Heuristik ist wieder aktiv.';
+});
+
 btnExportExamples.addEventListener('click', () => {
   const payload={
     exportedAt:new Date().toISOString(),
     classes:CLASS_OPTIONS,
-    examples:trainingExamples.map(({id,label,image,capturedAt,trackId})=>({id,label,image,capturedAt,trackId}))
+    note:'Enthält nur abgeleitete Zahlen-Merkmale je Beispiel, keine Bilddaten.',
+    learnedProfile,
+    examples:trainingExamples.map(({id,label,feat,capturedAt,trackId})=>({id,label,feat,capturedAt,trackId}))
   };
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
-  a.download='verkehrsanalyse_trainingsbeispiele_'+Date.now()+'.json';
+  a.download='verkehrsanalyse_trainingsprofil_'+Date.now()+'.json';
   a.click();
 });
 btnClearExamples.addEventListener('click', () => {
@@ -1309,11 +1424,21 @@ btnAnalyzeLanes.addEventListener('click', () => {
   const gray=new Float32Array(LW*LH);
   for(let i=0,p=0;i<LW*LH;i++,p+=4) gray[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2];
   const horizonY=Math.round(LH*(parseInt(horizonSlider.value,10)/100));
+
+  // Prefer the user-drawn analysis region (arbitrary polygon) over the simple
+  // horizontal horizon cutoff — it also works for cameras that aren't facing
+  // straight ahead. The horizon slider stays as a fallback when no region is
+  // defined, and its row note reflects which one is actually in effect.
+  const laneScaleX=LW/video.videoWidth, laneScaleY=LH/video.videoHeight;
+  const roiLane = roiPolygon ? roiPolygon.map(p=>({x:p.x*laneScaleX,y:p.y*laneScaleY})) : null;
+  function inRegion(x,y){ return roiLane ? pointInPolygon(x,y,roiLane) : y>=horizonY; }
+
   let candidatePoints=[];
   if(markingModeToggle.checked){
     const localAvg=boxBlurR(gray,LW,LH,9);
-    for(let y=horizonY;y<LH;y++)
+    for(let y=0;y<LH;y++)
       for(let x=0;x<LW;x++){
+        if(!inRegion(x,y)) continue;
         const i=y*LW+x;
         if(gray[i]-localAvg[i]>22&&gray[i]>110) candidatePoints.push([x,y]);
       }
@@ -1321,18 +1446,25 @@ btnAnalyzeLanes.addEventListener('click', () => {
     const mag=sobelEdges(gray,LW,LH);
     let mx=1; for(let i=0;i<mag.length;i++) if(mag[i]>mx) mx=mag[i];
     const th=mx*0.35;
-    for(let y=horizonY;y<LH;y++)
+    for(let y=0;y<LH;y++)
       for(let x=0;x<LW;x++)
-        if(mag[y*LW+x]>th) candidatePoints.push([x,y]);
+        if(inRegion(x,y)&&mag[y*LW+x]>th) candidatePoints.push([x,y]);
   }
   lctx.putImageData(imgData,0,0);
-  lctx.strokeStyle='rgba(255,93,93,0.8)'; lctx.lineWidth=1.5; lctx.setLineDash([6,4]);
-  lctx.beginPath(); lctx.moveTo(0,horizonY); lctx.lineTo(LW,horizonY); lctx.stroke();
-  lctx.setLineDash([]);
+  if(roiLane){
+    lctx.strokeStyle='rgba(40,224,197,0.8)'; lctx.lineWidth=1.5; lctx.setLineDash([3,3]);
+    lctx.beginPath();
+    roiLane.forEach((p,i)=>i===0?lctx.moveTo(p.x,p.y):lctx.lineTo(p.x,p.y));
+    lctx.closePath(); lctx.stroke(); lctx.setLineDash([]);
+  } else {
+    lctx.strokeStyle='rgba(255,93,93,0.8)'; lctx.lineWidth=1.5; lctx.setLineDash([6,4]);
+    lctx.beginPath(); lctx.moveTo(0,horizonY); lctx.lineTo(LW,horizonY); lctx.stroke();
+    lctx.setLineDash([]);
+  }
   lctx.fillStyle='rgba(40,224,197,0.55)';
   for(const [x,y] of candidatePoints) lctx.fillRect(x,y,1,1);
   if(candidatePoints.length<30){
-    laneStatus.textContent=`Zu wenige Kandidatenpunkte (${candidatePoints.length}). Horizont-Slider anpassen.`;
+    laneStatus.textContent=`Zu wenige Kandidatenpunkte (${candidatePoints.length}). ${roiLane?'Analysebereich vergrößern':'Horizont-Slider anpassen'} oder „nur Markierungen“ umschalten.`;
     btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
   }
   const lines=houghLines(candidatePoints,LW,LH,10);
@@ -1340,13 +1472,17 @@ btnAnalyzeLanes.addEventListener('click', () => {
     laneStatus.textContent=`Nur ${lines.length} Linie(n) gefunden — mind. 2 nötig. Manuell kalibrieren.`;
     btnApplyLaneSuggestion.disabled=true; laneSuggestion=null; return;
   }
+  const regionYs = roiLane ? roiLane.map(p=>p.y) : null;
+  const drawTopY  = roiLane ? Math.min(...regionYs) : horizonY;
+  const drawBotY  = roiLane ? Math.max(...regionYs) : LH;
   for(const line of lines){
-    const x0=lineXatY(line,horizonY), x1=lineXatY(line,LH);
+    const x0=lineXatY(line,drawTopY), x1=lineXatY(line,drawBotY);
     if(x0===null||x1===null) continue;
     lctx.strokeStyle='rgba(255,176,32,0.35)'; lctx.lineWidth=1;
-    lctx.beginPath(); lctx.moveTo(x0,horizonY); lctx.lineTo(x1,LH); lctx.stroke();
+    lctx.beginPath(); lctx.moveTo(x0,drawTopY); lctx.lineTo(x1,drawBotY); lctx.stroke();
   }
-  const nearY=LH*0.94, farY=Math.max(horizonY+2,LH*0.55);
+  const nearY = roiLane ? Math.max(...regionYs)-2 : LH*0.94;
+  const farY  = roiLane ? Math.min(...regionYs)+2 : Math.max(horizonY+2,LH*0.55);
   let best=null;
   for(let i=0;i<lines.length;i++)
     for(let j=i+1;j<lines.length;j++){
@@ -1531,15 +1667,37 @@ function classify(blob){
     const pL=applyH(calibration.H,xL*scaleX,yBase*scaleY);
     const pR=applyH(calibration.H,xR*scaleX,yBase*scaleY);
     const wm=Math.hypot(pR.x-pL.x,pR.y-pL.y);
+    if(learnedProfile){
+      const cls=nearestLearnedClass(learnedProfile, c => c.avgWidthM, wm);
+      if(cls) return cls;
+    }
     if(tall&&wm<1.0) return 'Person';
     if(wm<1.1) return 'Motorrad/Fahrrad';
     if(wm<2.2) return 'PKW';
     return 'LKW/Bus';
   }
+  if(learnedProfile){
+    const cls=nearestLearnedClass(learnedProfile, c => c.avgArea, area);
+    if(cls) return cls;
+  }
   if(tall&&area<minA*10) return 'Person';
   if(area<minA*2.2) return 'Motorrad/Fahrrad';
   if(area<minA*9) return 'PKW';
   return 'LKW/Bus';
+}
+
+// Nearest-centroid lookup against the learned per-class profile — picks the
+// class whose recorded average (real width, or pixel area if uncalibrated)
+// is closest to the current measurement. Skips classes without that metric.
+function nearestLearnedClass(profile, metricFn, value){
+  let bestCls=null, bestD=Infinity;
+  for(const [cls,p] of Object.entries(profile)){
+    const m=metricFn(p);
+    if(m==null) continue;
+    const d=Math.abs(value-m);
+    if(d<bestD){bestD=d;bestCls=cls;}
+  }
+  return bestCls;
 }
 
 function looksLikeGlassArtifact(t){
