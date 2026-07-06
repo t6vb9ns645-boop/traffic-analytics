@@ -644,21 +644,23 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
   </div>
 </div>
 
-<!-- ══════════ Standbild-Erkennung (Fahrzeuge/Personen ohne Bewegung) ══════════ -->
-<button class="training-fab fab-left" id="btnStillDrawer">📷 Standbild-Erkennung</button>
+<!-- ══════════ Bild-/Video-Erkennung (Fahrzeuge/Personen ohne Bewegung) ══════════ -->
+<button class="training-fab fab-left" id="btnStillDrawer">📷 Bild-/Video-Erkennung</button>
 <div class="training-drawer drawer-left" id="stillDrawer">
   <div class="training-drawer-head">
-    <h2>Standbild-Erkennung</h2>
+    <h2>Bild-/Video-Erkennung</h2>
     <button class="ghost" id="btnCloseStillDrawer">✕</button>
   </div>
   <div class="training-drawer-body">
-    <div class="note">Erkennt Fahrzeuge &amp; Personen auf einem <b>Einzelbild</b> (Foto oder Standbild) — im Gegensatz zur Live-Analyse unabhängig von Bewegung. Nutzt ein vortrainiertes Modell (COCO-SSD), das beim ersten Klick von einem CDN nachgeladen wird (Internetzugriff nötig).</div>
+    <div class="note">Erkennt Fahrzeuge &amp; Personen auf einem <b>Einzelbild</b> oder einer <b>kurzen aufgenommenen Sequenz</b> — im Gegensatz zur Live-Analyse unabhängig von Bewegung. Nutzt ein vortrainiertes Modell (COCO-SSD), das beim ersten Klick von einem CDN nachgeladen wird (Internetzugriff nötig). Erkennungen lassen sich unten <b>manuell korrigieren oder verwerfen</b>, bevor sie übernommen werden.</div>
     <div class="row">
       <button id="btnUseCurrentFrame" style="flex:1;">🎞 Aktuelles Kamerabild</button>
+      <button id="btnRecordSequence" style="flex:1;">🎬 Sequenz aufnehmen (4s)</button>
     </div>
     <input type="file" id="stillFileInput" accept="image/*" style="width:100%;">
     <button id="btnRunStillDetect" class="primary" style="width:100%;" disabled>🔍 Analysieren</button>
-    <div class="diag-msg" id="stillStatus">Bild wählen, dann analysieren.</div>
+    <div class="diag-msg" id="stillStatus">Bild wählen oder Sequenz aufnehmen, dann analysieren.</div>
+    <div id="seqFrameStrip" class="module-grid" style="display:none;grid-template-columns:repeat(4,1fr);"></div>
     <canvas id="stillCanvas"></canvas>
     <div id="stillResultList"></div>
   </div>
@@ -764,6 +766,8 @@ const btnStillDrawer      = document.getElementById('btnStillDrawer');
 const btnCloseStillDrawer = document.getElementById('btnCloseStillDrawer');
 const stillDrawer         = document.getElementById('stillDrawer');
 const btnUseCurrentFrame  = document.getElementById('btnUseCurrentFrame');
+const btnRecordSequence   = document.getElementById('btnRecordSequence');
+const seqFrameStrip       = document.getElementById('seqFrameStrip');
 const stillFileInput      = document.getElementById('stillFileInput');
 const btnRunStillDetect   = document.getElementById('btnRunStillDetect');
 const stillStatus         = document.getElementById('stillStatus');
@@ -1528,15 +1532,46 @@ async function ensureCocoModel(){
   return cocoModel;
 }
 
+// A "sequence" is one or more frames (a single still is just a sequence of
+// length 1) — each frame keeps its own base image and its own editable
+// detection list, so recorded sequences and stills share the exact same
+// review/edit UI below instead of two parallel implementations.
+let sequenceFrames=[]; // [{base:canvas, detections:[...]|null}]
+let activeFrameIndex=0;
+
+function buildFrameStrip(){
+  seqFrameStrip.innerHTML='';
+  if(sequenceFrames.length<=1){ seqFrameStrip.style.display='none'; return; }
+  seqFrameStrip.style.display='grid';
+  sequenceFrames.forEach((f,i)=>{
+    const b=document.createElement('button');
+    b.className='module-btn'+(i===activeFrameIndex?' active':'');
+    b.textContent='Frame '+(i+1);
+    b.addEventListener('click', ()=>showFrame(i));
+    seqFrameStrip.appendChild(b);
+  });
+}
+function showFrame(idx){
+  if(!sequenceFrames[idx]) return;
+  activeFrameIndex=idx;
+  const f=sequenceFrames[idx];
+  stillBase.width=f.base.width; stillBase.height=f.base.height;
+  stillBase.getContext('2d').drawImage(f.base,0,0);
+  stillCanvas.width=f.base.width; stillCanvas.height=f.base.height; stillCanvas.style.display='block';
+  stillDetections=f.detections || [];
+  drawStillDetections();
+  renderStillResultList();
+  [...seqFrameStrip.children].forEach((btn,i)=>btn.classList.toggle('active', i===idx));
+}
+
 function loadStillImage(src, isLiveFrame){
   const w=src.width||src.naturalWidth, h=src.height||src.naturalHeight;
-  stillBase.width=w; stillBase.height=h;
-  stillBase.getContext('2d').drawImage(src,0,0,w,h);
-  stillCanvas.width=w; stillCanvas.height=h; stillCanvas.style.display='block';
-  stctx.drawImage(stillBase,0,0);
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  c.getContext('2d').drawImage(src,0,0,w,h);
+  sequenceFrames=[{base:c, detections:null}];
   stillIsLiveFrame=isLiveFrame;
-  stillDetections=[];
-  stillResultList.innerHTML='';
+  buildFrameStrip();
+  showFrame(0);
   btnRunStillDetect.disabled=false;
   stillStatus.textContent='Bild geladen — bereit zur Analyse.';
 }
@@ -1556,25 +1591,63 @@ stillFileInput.addEventListener('change', () => {
 
 const COCO_CLASS_MAP={car:'PKW',truck:'LKW/Bus',bus:'LKW/Bus',motorcycle:'Motorrad/Fahrrad',bicycle:'Motorrad/Fahrrad',person:'Person'};
 
+async function detectObjectsIn(canvas){
+  const model=await ensureCocoModel();
+  const preds=await model.detect(canvas);
+  return preds.filter(p=>COCO_CLASS_MAP[p.class]).map((p,i)=>({id:i, cls:COCO_CLASS_MAP[p.class], score:p.score, bbox:p.bbox}));
+}
+
 btnRunStillDetect.addEventListener('click', async () => {
-  if(!stillBase.width) return;
+  if(!sequenceFrames.length) return;
   btnRunStillDetect.disabled=true;
   try{
-    const model=await ensureCocoModel();
     stillStatus.textContent='Analysiere …';
-    const preds=await model.detect(stillBase);
-    stillDetections=preds.filter(p=>COCO_CLASS_MAP[p.class]).map((p,i)=>({
-      id:i, cls:COCO_CLASS_MAP[p.class], score:p.score, bbox:p.bbox
-    }));
+    const dets=await detectObjectsIn(sequenceFrames[activeFrameIndex].base);
+    sequenceFrames[activeFrameIndex].detections=dets;
+    stillDetections=dets;
     drawStillDetections();
     renderStillResultList();
-    stillStatus.textContent = stillDetections.length
-      ? `${stillDetections.length} Objekt(e) erkannt.`
-      : 'Keine Fahrzeuge/Personen erkannt.';
+    stillStatus.textContent = dets.length ? `${dets.length} Objekt(e) erkannt.` : 'Keine Fahrzeuge/Personen erkannt.';
   }catch(e){
     stillStatus.textContent='Fehler: '+e.message;
   }
   btnRunStillDetect.disabled=false;
+});
+
+// Records a short burst of frames straight from the live source and runs
+// detection on all of them right away — recording implies wanting the
+// analysis, so unlike the single-still path this doesn't wait for a
+// separate "Analysieren" click.
+const SEQ_FRAME_COUNT=7, SEQ_INTERVAL_MS=600;
+btnRecordSequence.addEventListener('click', async () => {
+  if(!hasSource||video.videoWidth===0){ stillStatus.textContent='Keine Videoquelle geladen.'; return; }
+  btnRecordSequence.disabled=true; btnUseCurrentFrame.disabled=true; btnRunStillDetect.disabled=true;
+  sequenceFrames=[]; activeFrameIndex=0; seqFrameStrip.style.display='none';
+  for(let i=0;i<SEQ_FRAME_COUNT;i++){
+    const c=document.createElement('canvas'); c.width=video.videoWidth; c.height=video.videoHeight;
+    try{ c.getContext('2d').drawImage(video,0,0); }
+    catch(e){
+      stillStatus.textContent='Aufnahme blockiert (CORS). Webcam oder lokale Datei verwenden.';
+      btnRecordSequence.disabled=false; btnUseCurrentFrame.disabled=false; return;
+    }
+    sequenceFrames.push({base:c, detections:null});
+    stillStatus.textContent=`Nehme Sequenz auf (${i+1}/${SEQ_FRAME_COUNT}) …`;
+    if(i<SEQ_FRAME_COUNT-1) await new Promise(r=>setTimeout(r,SEQ_INTERVAL_MS));
+  }
+  stillIsLiveFrame=true;
+  try{
+    for(let i=0;i<sequenceFrames.length;i++){
+      stillStatus.textContent=`Analysiere Frame ${i+1}/${sequenceFrames.length} …`;
+      sequenceFrames[i].detections=await detectObjectsIn(sequenceFrames[i].base);
+    }
+    buildFrameStrip();
+    showFrame(0);
+    const total=sequenceFrames.reduce((s,f)=>s+f.detections.length,0);
+    stillStatus.textContent=`Sequenz analysiert: ${sequenceFrames.length} Frames, ${total} Objekt(e) insgesamt — Frame oben auswählen, um zu bearbeiten.`;
+  }catch(e){
+    stillStatus.textContent='Fehler: '+e.message;
+  }
+  btnRecordSequence.disabled=false; btnUseCurrentFrame.disabled=false; btnRunStillDetect.disabled=false;
 });
 
 function drawStillDetections(){
@@ -1592,21 +1665,40 @@ function drawStillDetections(){
     stctx.fillStyle=col; stctx.fillText(label,x+4,Math.max(13,y-5));
   }
 }
+// Each row is directly editable: correct the label (reflected on the canvas
+// immediately) or discard a false positive outright, before deciding whether
+// to push it into the training pool.
 function renderStillResultList(){
   stillResultList.innerHTML='';
   stillDetections.forEach(det => {
     const row=document.createElement('div');
     row.className='example-row';
-    const lbl=document.createElement('span');
-    lbl.style.cssText='flex:1;font-size:11px;';
-    lbl.textContent=`${det.cls} (${Math.round(det.score*100)}%)`;
-    const btn=document.createElement('button');
-    btn.textContent='→ Als Beispiel';
-    btn.addEventListener('click', () => {
-      pushStillDetectionAsExample(det);
-      btn.disabled=true; btn.textContent='✓ übernommen';
+    const sel=document.createElement('select');
+    CLASS_OPTIONS.forEach(c=>{
+      const o=document.createElement('option'); o.value=c; o.textContent=c;
+      if(c===det.cls) o.selected=true;
+      sel.appendChild(o);
     });
-    row.appendChild(lbl); row.appendChild(btn);
+    sel.addEventListener('change', () => { det.cls=sel.value; drawStillDetections(); });
+    const scoreEl=document.createElement('span');
+    scoreEl.style.cssText='font-size:10px;color:var(--dim);white-space:nowrap;';
+    scoreEl.textContent=Math.round(det.score*100)+'%';
+    const pushBtn=document.createElement('button');
+    pushBtn.textContent='→ Als Beispiel';
+    pushBtn.addEventListener('click', () => {
+      pushStillDetectionAsExample(det);
+      pushBtn.disabled=true; pushBtn.textContent='✓ übernommen';
+    });
+    const delBtn=document.createElement('button');
+    delBtn.textContent='✕';
+    delBtn.title='Verwerfen (Fehlerkennung)';
+    delBtn.addEventListener('click', () => {
+      stillDetections=stillDetections.filter(d=>d!==det);
+      if(sequenceFrames[activeFrameIndex]) sequenceFrames[activeFrameIndex].detections=stillDetections;
+      drawStillDetections();
+      renderStillResultList();
+    });
+    row.appendChild(sel); row.appendChild(scoreEl); row.appendChild(pushBtn); row.appendChild(delBtn);
     stillResultList.appendChild(row);
   });
 }
