@@ -869,6 +869,17 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       </div>
     </div>
 
+    <div class="sb-section">
+      <div class="sb-head">Objektzahl-Grenze</div>
+      <div class="sb-body">
+        <div class="slider-row">
+          <div class="slider-lbl"><span>Realistische max. Objektanzahl</span><span id="maxObjectsVal">30</span></div>
+          <input type="range" id="maxObjectsSlider" min="1" max="200" value="30">
+        </div>
+        <div class="diag-msg">Werden mehr Objekte erkannt als hier eingestellt, zählen zuerst die kleinsten nicht mehr mit — besonders im Nachtmodus hilfreich, wo verstärktes Bildrauschen sonst leicht als viele kleine Objekte gezählt wird.</div>
+      </div>
+    </div>
+
     <div style="margin-top:auto;flex-shrink:0;display:flex;flex-direction:column;gap:5px;">
       <button class="ghost" id="btnBackToSettings" style="width:100%;font-size:11px;">← Einstellungen</button>
     </div>
@@ -1170,6 +1181,8 @@ const calibAdjustList       = document.getElementById('calibAdjustList');
 const btnCalibAdjustConfirm = document.getElementById('btnCalibAdjustConfirm');
 const btnCalibAdjustCancel  = document.getElementById('btnCalibAdjustCancel');
 const calibAdjustStatus     = document.getElementById('calibAdjustStatus');
+const maxObjectsSlider      = document.getElementById('maxObjectsSlider');
+const maxObjectsVal         = document.getElementById('maxObjectsVal');
 const captureStatus     = document.getElementById('captureStatus');
 const btnToolsMenu = document.getElementById('btnToolsMenu');
 const toolsMenu     = document.getElementById('toolsMenu');
@@ -3597,6 +3610,11 @@ overlay.addEventListener('mousemove', ev => {
   if(!dragSelectActive) return;
   const rect=overlay.getBoundingClientRect();
   dragSelectCurrent={x:ev.clientX-rect.left, y:ev.clientY-rect.top};
+  // Draw immediately instead of waiting for the next analysis frame — at a
+  // few fps (typical during live analysis) that made the drag rectangle
+  // barely visible/very laggy. renderOverlay() only reads current state, so
+  // calling it directly here is safe regardless of the analysis loop's timing.
+  renderOverlay();
 });
 window.addEventListener('mouseup', ev => {
   if(!dragSelectActive) return;
@@ -3900,6 +3918,7 @@ videoSizeSlider.addEventListener('input', () => {
 });
 sensSlider.addEventListener('input',   () => sensVal.textContent   = sensSlider.value);
 minAreaSlider.addEventListener('input',() => minAreaVal.textContent= minAreaSlider.value);
+maxObjectsSlider.addEventListener('input',() => maxObjectsVal.textContent=maxObjectsSlider.value);
 
 /* ══════════════════════════════════════════
    Analysis controls
@@ -4125,7 +4144,10 @@ function looksLikeGlassArtifact(t){
 // boxes are near-touching relative to their size back into one, as long as
 // the combined shape still looks plausible (not wildly elongated — that
 // would suggest two genuinely separate objects that just happen to align).
-function mergeCloseBlobs(blobs){
+// wideMerge (night mode): the contrast stretch used to bring out low-light
+// detail also fragments real objects into more, smaller separate blobs than
+// usual, so a wider merge radius is needed to still recombine them into one.
+function mergeCloseBlobs(blobs, wideMerge){
   let cur=blobs.map(b=>({...b}));
   let changed=true;
   while(changed){
@@ -4138,7 +4160,7 @@ function mergeCloseBlobs(blobs){
         const gapX=Math.max(0, Math.max(aMinX,bMinX)-Math.min(aMaxX,bMaxX));
         const gapY=Math.max(0, Math.max(aMinY,bMinY)-Math.min(aMaxY,bMaxY));
         const gap=Math.hypot(gapX,gapY);
-        const threshold=Math.max(2, Math.sqrt(Math.min(a.area,b.area))*0.6);
+        const threshold=Math.max(2, Math.sqrt(Math.min(a.area,b.area))*(wideMerge?0.95:0.6));
         if(gap>threshold) continue;
         const minX=Math.min(aMinX,bMinX), maxX=Math.max(aMaxX,bMaxX);
         const minY=Math.min(aMinY,bMinY), maxY=Math.max(aMaxY,bMaxY);
@@ -4232,14 +4254,23 @@ function step(){
 
   const visited=new Uint8Array(n), blobs=[];
   const qx=new Int16Array(n), qy=new Int16Array(n);
+  // Headlight/reflection glare in night mode overwhelmingly enters at the
+  // frame edges (a car's headlights sweeping in before the vehicle itself
+  // is visible, or glare off a wet road right at the border) and reads as
+  // a near-saturated-bright blob after the contrast stretch — unlike a real
+  // object's own motion blob, which is bright relative to its surroundings
+  // but not uniformly near white. Only checked in night mode since normal
+  // lighting doesn't produce this pattern.
+  const edgeMarginX=PW*0.05, edgeMarginY=PH*0.05, GLARE_BRIGHTNESS=215;
   for(let y=0;y<PH;y++) for(let x=0;x<PW;x++){
     const idx=y*PW+x;
     if(mask[idx]&&!visited[idx]){
       let qs=0,qe=0;
       qx[qe]=x;qy[qe]=y;qe++;visited[idx]=1;
-      let minX=x,maxX=x,minY=y,maxY=y,count=0;
+      let minX=x,maxX=x,minY=y,maxY=y,count=0,brightSum=0;
       while(qs<qe){
         const cx=qx[qs],cy=qy[qs];qs++;count++;
+        brightSum+=gray[cy*PW+cx];
         if(cx<minX)minX=cx;if(cx>maxX)maxX=cx;
         if(cy<minY)minY=cy;if(cy>maxY)maxY=cy;
         for(const [nx,ny] of [[cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1]]){
@@ -4252,16 +4283,33 @@ function step(){
       const bw=maxX-minX+1,bh=maxY-minY+1;
       const minA=parseInt(minAreaSlider.value,10);
       const elong=Math.max(bw/bh,bh/bw);
-      if(count>=minA&&count<n*0.35&&elong<5.5)
+      let isEdgeGlare=false;
+      if(nightModeEl.checked){
+        const nearEdge=minX<edgeMarginX||maxX>PW-edgeMarginX||minY<edgeMarginY||maxY>PH-edgeMarginY;
+        isEdgeGlare=nearEdge && (brightSum/count)>GLARE_BRIGHTNESS;
+      }
+      if(count>=minA&&count<n*0.35&&elong<5.5&&!isEdgeGlare)
         blobs.push({cx:(minX+maxX)/2,cy:(minY+maxY)/2,w:bw,h:bh,area:count});
     }
   }
 
-  const mergedBlobs=mergeCloseBlobs(blobs);
-  updateTracks(mergedBlobs);
-  renderOverlay(mergedBlobs);
+  const mergedBlobs=mergeCloseBlobs(blobs, nightModeEl.checked);
+  // Cap the number of simultaneously detected objects to a realistic count:
+  // if more than that were found (most likely in night mode, where
+  // amplified sensor noise can otherwise fragment into many small spurious
+  // blobs even after merging), drop the smallest ones first rather than
+  // just letting an implausible object count through unchecked.
+  const maxObjects=parseInt(maxObjectsSlider.value,10);
+  const limitedBlobs = mergedBlobs.length>maxObjects
+    ? [...mergedBlobs].sort((a,b)=>b.area-a.area).slice(0,maxObjects)
+    : mergedBlobs;
+  updateTracks(limitedBlobs);
+  renderOverlay(limitedBlobs);
   frameCount++;
-  diagLine.textContent=`Frame #${frameCount} · ${new Date().toLocaleTimeString('de-DE')} · ~${measuredFps.toFixed(1)} fps · ${motionPixels} bewegte Px · ${blobs.length} Objekte`;
+  const countMsg = mergedBlobs.length>maxObjects
+    ? `${limitedBlobs.length}/${mergedBlobs.length} Objekte (Grenze ${maxObjects})`
+    : `${blobs.length} Objekte`;
+  diagLine.textContent=`Frame #${frameCount} · ${new Date().toLocaleTimeString('de-DE')} · ~${measuredFps.toFixed(1)} fps · ${motionPixels} bewegte Px · ${countMsg}`;
 }
 
 function updateTracks(blobs){
@@ -4519,9 +4567,16 @@ function renderOverlay(){
     // native-pixel and need nativeToDisplay().
     const x0=Math.min(dragSelectStart.x,dragSelectCurrent.x), y0=Math.min(dragSelectStart.y,dragSelectCurrent.y);
     const w=Math.abs(dragSelectCurrent.x-dragSelectStart.x), h=Math.abs(dragSelectCurrent.y-dragSelectStart.y);
+    const color = deselectMode ? '#ff5d5d' : '#28e0c5';
     octx.save();
-    octx.strokeStyle = deselectMode ? '#ff5d5d' : '#28e0c5';
-    octx.setLineDash([6,4]); octx.lineWidth=2;
+    // A thin dashed line alone was easy to miss against a busy video frame
+    // — a translucent fill plus an outer dark halo/inner bright stroke
+    // makes the marked area clearly visible against any background.
+    octx.fillStyle = color+'33';
+    octx.fillRect(x0,y0,w,h);
+    octx.strokeStyle='rgba(0,0,0,.85)'; octx.lineWidth=4; octx.setLineDash([]);
+    octx.strokeRect(x0,y0,w,h);
+    octx.strokeStyle=color; octx.lineWidth=2; octx.setLineDash([6,4]);
     octx.strokeRect(x0,y0,w,h);
     octx.restore();
   }
