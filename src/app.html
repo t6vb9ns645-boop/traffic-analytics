@@ -2636,12 +2636,23 @@ function nearestTrackToNativePoint(native){
   const tol = best ? Math.max(40,(best.dispW??best.w??20)*sX) : 0;
   return (best && bestD<=tol) ? best : null;
 }
-function handleManualCaptureClick(native){
+function handleManualCaptureClick(native, dragRect){
   if(!hasSource){ manualCaptureStatus.textContent='Keine Videoquelle geladen.'; return; }
   const immediateLabel=manualCaptureClassSelect.value || null; // optional real-time classification
   const track=nearestTrackToNativePoint(native);
   let feat, preview, trackId=null;
-  if(track){
+  if(dragRect){
+    // The user drew the exact area to use — always honor that size and
+    // position regardless of resolution (displayToNative already scaled it
+    // to the video's current native resolution), rather than falling back
+    // to a track's own detected box or the fixed default size. Still link
+    // a nearby track if there is one, so it keeps being followed/can be
+    // reclassified live — the manual box only overrides its *measurement*.
+    feat=computeFeaturesAtNativePoint(dragRect.cx,dragRect.cy,dragRect.w,dragRect.h);
+    preview=cropPreviewAtNativePoint(dragRect.cx,dragRect.cy,dragRect.w,dragRect.h);
+    feat.cropNativeW=Math.round(dragRect.w); feat.cropNativeH=Math.round(dragRect.h);
+    if(track){ trackId=track.id; if(immediateLabel){ track.manualCls=immediateLabel; track.cls=immediateLabel; } }
+  } else if(track){
     // Hits an already-detected object — capture using its actual bounding
     // box (same as the tracked/confirmed capture path) and keep following
     // it: the track isn't newly created here, it already exists and
@@ -2657,7 +2668,9 @@ function handleManualCaptureClick(native){
   } else {
     // No tracked object at the click — fall back to a fixed-size crop
     // ("geeignet großer Bildausschnitt", matching the minimum auto-capture
-    // size) so an arbitrary point can still be captured.
+    // size) so an arbitrary point can still be captured. Already clamped
+    // to the video's actual dimensions (see cropPreviewAtNativePoint), so
+    // this degrades gracefully on lower resolutions too.
     feat=computeFeaturesAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
     preview=cropPreviewAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
     feat.cropNativeW=MIN_CAPTURE_CROP_W; feat.cropNativeH=MIN_CAPTURE_CROP_H;
@@ -2693,20 +2706,36 @@ btnDeselectMode.addEventListener('click', () => {
     ? 'Aktiv: Klicke auf ein fälschlich erkanntes Objekt.'
     : 'Aktivieren, dann auf ein fälschlich erkanntes Objekt klicken — wird sofort als Störung gewertet und fließt weiterhin in die Ermittlung ein, statt einfach verworfen zu werden.';
 });
-function handleDeselectClick(native){
-  const track=nearestTrackToNativePoint(native);
-  if(!track){ deselectStatus.textContent='Kein Objekt in der Nähe des Klicks gefunden.'; return; }
-  track.manualCls='Störung'; track.cls='Störung'; track.isArtifact=true;
-  autoLearnPool.push({label:'Störung', feat:computeFeatures(track)});
-  if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
-  // Also pull it out of the pending queue if it was already sitting there
-  // waiting on a decision — it's just been made, no need to review it twice.
-  pendingAutoSamples=pendingAutoSamples.filter(e=>e.trackId!==track.id);
-  if(pendingAutoSamples.length<=PENDING_RESUME_AT) pendingCapturePaused=false;
-  renderPendingList();
-  renderExampleList();
-  recomputeLearnedProfile();
-  deselectStatus.textContent=`Objekt #${track.id} als Störung gewertet — fließt in die Ermittlung ein.`;
+function handleDeselectClick(native, dragRect){
+  const point=dragRect ? {x:dragRect.cx, y:dragRect.cy} : native;
+  const track=nearestTrackToNativePoint(point);
+  if(track){
+    track.manualCls='Störung'; track.cls='Störung'; track.isArtifact=true;
+    const feat=dragRect ? computeFeaturesAtNativePoint(dragRect.cx,dragRect.cy,dragRect.w,dragRect.h) : computeFeatures(track);
+    if(dragRect){ feat.cropNativeW=Math.round(dragRect.w); feat.cropNativeH=Math.round(dragRect.h); }
+    autoLearnPool.push({label:'Störung', feat});
+    if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
+    // Also pull it out of the pending queue if it was already sitting there
+    // waiting on a decision — it's just been made, no need to review it twice.
+    pendingAutoSamples=pendingAutoSamples.filter(e=>e.trackId!==track.id);
+    if(pendingAutoSamples.length<=PENDING_RESUME_AT) pendingCapturePaused=false;
+    renderPendingList();
+    renderExampleList();
+    recomputeLearnedProfile();
+    deselectStatus.textContent=`Objekt #${track.id} als Störung gewertet — fließt in die Ermittlung ein.`;
+  } else if(dragRect){
+    // No tracked object nearby, but the user explicitly marked a screen
+    // area as not being an object — still a valid negative example.
+    const feat=computeFeaturesAtNativePoint(dragRect.cx,dragRect.cy,dragRect.w,dragRect.h);
+    feat.cropNativeW=Math.round(dragRect.w); feat.cropNativeH=Math.round(dragRect.h);
+    autoLearnPool.push({label:'Störung', feat});
+    if(autoLearnPool.length>AUTO_LEARN_POOL_CAP) autoLearnPool.splice(0, autoLearnPool.length-AUTO_LEARN_POOL_CAP);
+    renderExampleList();
+    recomputeLearnedProfile();
+    deselectStatus.textContent='Markierter Bereich als Störung gewertet — fließt in die Ermittlung ein.';
+  } else {
+    deselectStatus.textContent='Kein Objekt in der Nähe des Klicks gefunden.';
+  }
 }
 
 // Derive a small numeric feature profile from the track — this, not a
@@ -3517,8 +3546,52 @@ overlay.addEventListener('click', ev => {
   if(roiMode){ handleRoiClick(native); return; }
   if(calibrationMode){ handleCalibClick(native); return; }
   if(captureMode){ handleCaptureClick(native); return; }
-  if(manualCaptureMode){ handleManualCaptureClick(native); return; }
-  if(deselectMode){ handleDeselectClick(native); return; }
+  // manualCaptureMode/deselectMode are handled via the mousedown/mousemove/
+  // mouseup drag-selection listeners below instead (a plain click there is
+  // just a zero-size drag), so they're intentionally not handled here.
+});
+
+/* ══════════════════════════════════════════
+   Manual capture / deselect: click-or-drag selection. A plain click behaves
+   as before (nearest tracked object, or a fixed-size fallback box); dragging
+   a rectangle instead marks the exact screen area to use — converted via
+   displayToNative(), which already scales by the video's current native
+   resolution vs. its displayed size, so this works identically regardless
+   of what resolution the source actually is.
+══════════════════════════════════════════ */
+let dragSelectStart=null, dragSelectCurrent=null, dragSelectActive=false;
+const DRAG_SELECT_MIN_PX=8; // below this, treat as a plain click rather than a drag
+overlay.addEventListener('mousedown', ev => {
+  if(!(manualCaptureMode || deselectMode)) return;
+  const rect=overlay.getBoundingClientRect();
+  dragSelectStart={x:ev.clientX-rect.left, y:ev.clientY-rect.top};
+  dragSelectCurrent=dragSelectStart;
+  dragSelectActive=true;
+});
+overlay.addEventListener('mousemove', ev => {
+  if(!dragSelectActive) return;
+  const rect=overlay.getBoundingClientRect();
+  dragSelectCurrent={x:ev.clientX-rect.left, y:ev.clientY-rect.top};
+});
+window.addEventListener('mouseup', ev => {
+  if(!dragSelectActive) return;
+  dragSelectActive=false;
+  const rect=overlay.getBoundingClientRect();
+  const endPt={x:ev.clientX-rect.left, y:ev.clientY-rect.top};
+  const dxCss=Math.abs(endPt.x-dragSelectStart.x), dyCss=Math.abs(endPt.y-dragSelectStart.y);
+  const start=dragSelectStart; dragSelectStart=null; dragSelectCurrent=null;
+  if(dxCss<DRAG_SELECT_MIN_PX && dyCss<DRAG_SELECT_MIN_PX){
+    // Too small to be a deliberate drag — same as a plain click at the release point.
+    const native=displayToNative(endPt.x, endPt.y);
+    if(manualCaptureMode) handleManualCaptureClick(native);
+    else if(deselectMode) handleDeselectClick(native);
+    return;
+  }
+  const n0=displayToNative(start.x, start.y), n1=displayToNative(endPt.x, endPt.y);
+  const dragRect={ cx:(n0.x+n1.x)/2, cy:(n0.y+n1.y)/2, w:Math.abs(n1.x-n0.x), h:Math.abs(n1.y-n0.y) };
+  const native={x:dragRect.cx, y:dragRect.cy};
+  if(manualCaptureMode) handleManualCaptureClick(native, dragRect);
+  else if(deselectMode) handleDeselectClick(native, dragRect);
 });
 
 /* ══════════════════════════════════════════
@@ -4411,6 +4484,20 @@ function renderOverlay(){
       if(p.label===calibAdjustArmed){ octx.lineWidth=2; octx.stroke(); } else { octx.fill(); }
       octx.fillText(p.label,d.x+8,d.y-8);
     });
+    octx.restore();
+  }
+
+  if(dragSelectActive && dragSelectStart && dragSelectCurrent){
+    // Live feedback for the manual capture/deselect click-and-drag
+    // selection — drawn in display (CSS-pixel) coordinates directly since
+    // both points already are, unlike the other overlays here which are
+    // native-pixel and need nativeToDisplay().
+    const x0=Math.min(dragSelectStart.x,dragSelectCurrent.x), y0=Math.min(dragSelectStart.y,dragSelectCurrent.y);
+    const w=Math.abs(dragSelectCurrent.x-dragSelectStart.x), h=Math.abs(dragSelectCurrent.y-dragSelectStart.y);
+    octx.save();
+    octx.strokeStyle = deselectMode ? '#ff5d5d' : '#28e0c5';
+    octx.setLineDash([6,4]); octx.lineWidth=2;
+    octx.strokeRect(x0,y0,w,h);
     octx.restore();
   }
 
