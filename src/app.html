@@ -869,6 +869,17 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       </div>
     </div>
 
+    <div class="sb-section">
+      <div class="sb-head">Objektzahl-Grenze</div>
+      <div class="sb-body">
+        <div class="slider-row">
+          <div class="slider-lbl"><span>Realistische max. Objektanzahl</span><span id="maxObjectsVal">30</span></div>
+          <input type="range" id="maxObjectsSlider" min="1" max="200" value="30">
+        </div>
+        <div class="diag-msg">Werden mehr Objekte erkannt als hier eingestellt, zählen zuerst die kleinsten nicht mehr mit — besonders im Nachtmodus hilfreich, wo verstärktes Bildrauschen sonst leicht als viele kleine Objekte gezählt wird.</div>
+      </div>
+    </div>
+
     <div style="margin-top:auto;flex-shrink:0;display:flex;flex-direction:column;gap:5px;">
       <button class="ghost" id="btnBackToSettings" style="width:100%;font-size:11px;">← Einstellungen</button>
     </div>
@@ -1170,6 +1181,8 @@ const calibAdjustList       = document.getElementById('calibAdjustList');
 const btnCalibAdjustConfirm = document.getElementById('btnCalibAdjustConfirm');
 const btnCalibAdjustCancel  = document.getElementById('btnCalibAdjustCancel');
 const calibAdjustStatus     = document.getElementById('calibAdjustStatus');
+const maxObjectsSlider      = document.getElementById('maxObjectsSlider');
+const maxObjectsVal         = document.getElementById('maxObjectsVal');
 const captureStatus     = document.getElementById('captureStatus');
 const btnToolsMenu = document.getElementById('btnToolsMenu');
 const toolsMenu     = document.getElementById('toolsMenu');
@@ -3900,6 +3913,7 @@ videoSizeSlider.addEventListener('input', () => {
 });
 sensSlider.addEventListener('input',   () => sensVal.textContent   = sensSlider.value);
 minAreaSlider.addEventListener('input',() => minAreaVal.textContent= minAreaSlider.value);
+maxObjectsSlider.addEventListener('input',() => maxObjectsVal.textContent=maxObjectsSlider.value);
 
 /* ══════════════════════════════════════════
    Analysis controls
@@ -4125,7 +4139,10 @@ function looksLikeGlassArtifact(t){
 // boxes are near-touching relative to their size back into one, as long as
 // the combined shape still looks plausible (not wildly elongated — that
 // would suggest two genuinely separate objects that just happen to align).
-function mergeCloseBlobs(blobs){
+// wideMerge (night mode): the contrast stretch used to bring out low-light
+// detail also fragments real objects into more, smaller separate blobs than
+// usual, so a wider merge radius is needed to still recombine them into one.
+function mergeCloseBlobs(blobs, wideMerge){
   let cur=blobs.map(b=>({...b}));
   let changed=true;
   while(changed){
@@ -4138,7 +4155,7 @@ function mergeCloseBlobs(blobs){
         const gapX=Math.max(0, Math.max(aMinX,bMinX)-Math.min(aMaxX,bMaxX));
         const gapY=Math.max(0, Math.max(aMinY,bMinY)-Math.min(aMaxY,bMaxY));
         const gap=Math.hypot(gapX,gapY);
-        const threshold=Math.max(2, Math.sqrt(Math.min(a.area,b.area))*0.6);
+        const threshold=Math.max(2, Math.sqrt(Math.min(a.area,b.area))*(wideMerge?0.95:0.6));
         if(gap>threshold) continue;
         const minX=Math.min(aMinX,bMinX), maxX=Math.max(aMaxX,bMaxX);
         const minY=Math.min(aMinY,bMinY), maxY=Math.max(aMaxY,bMaxY);
@@ -4257,11 +4274,23 @@ function step(){
     }
   }
 
-  const mergedBlobs=mergeCloseBlobs(blobs);
-  updateTracks(mergedBlobs);
-  renderOverlay(mergedBlobs);
+  const mergedBlobs=mergeCloseBlobs(blobs, nightModeEl.checked);
+  // Cap the number of simultaneously detected objects to a realistic count:
+  // if more than that were found (most likely in night mode, where
+  // amplified sensor noise can otherwise fragment into many small spurious
+  // blobs even after merging), drop the smallest ones first rather than
+  // just letting an implausible object count through unchecked.
+  const maxObjects=parseInt(maxObjectsSlider.value,10);
+  const limitedBlobs = mergedBlobs.length>maxObjects
+    ? [...mergedBlobs].sort((a,b)=>b.area-a.area).slice(0,maxObjects)
+    : mergedBlobs;
+  updateTracks(limitedBlobs);
+  renderOverlay(limitedBlobs);
   frameCount++;
-  diagLine.textContent=`Frame #${frameCount} · ${new Date().toLocaleTimeString('de-DE')} · ~${measuredFps.toFixed(1)} fps · ${motionPixels} bewegte Px · ${blobs.length} Objekte`;
+  const countMsg = mergedBlobs.length>maxObjects
+    ? `${limitedBlobs.length}/${mergedBlobs.length} Objekte (Grenze ${maxObjects})`
+    : `${blobs.length} Objekte`;
+  diagLine.textContent=`Frame #${frameCount} · ${new Date().toLocaleTimeString('de-DE')} · ~${measuredFps.toFixed(1)} fps · ${motionPixels} bewegte Px · ${countMsg}`;
 }
 
 function updateTracks(blobs){
