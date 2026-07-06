@@ -65,13 +65,16 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
      wraps to 2 lines on common phone widths and eats a large chunk of the
      viewport height, squeezing the menu below to almost nothing. Drop the
      text labels and shrink everything so it reliably stays one row. */
-  .app-header{flex-shrink:0;padding:8px 12px;gap:8px;flex-wrap:nowrap;}
-  .brand{font-size:11px;}
+  .app-header{flex-shrink:0;padding:7px 10px;gap:4px;flex-wrap:nowrap;}
+  .brand{font-size:9.5px;}
+  .stepper{gap:0;}
+  .step-btn{padding:2px 3px;}
   .step-lbl{display:none;}
-  .step-num{width:22px;height:22px;font-size:10px;}
-  .step-conn{width:10px;margin-bottom:0;}
+  .step-num{width:19px;height:19px;font-size:9px;}
+  .step-conn{width:6px;margin-bottom:0;}
   .status-badge{display:none;}
-  .tools-menu-wrap #btnToolsMenu{padding:6px 8px;font-size:11px;}
+  .tools-menu-wrap #btnToolsMenu{padding:5px 8px;font-size:12px;}
+  .tools-menu-wrap #btnToolsMenu .btn-label{display:none;}
   .tools-menu{min-width:190px;}
   /* Stack video above the menu, but keep the whole app pinned to the
      viewport (no page-level scroll): the video gets a bounded share of
@@ -333,7 +336,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
   <div class="status-badge" id="clock">bereit</div>
 
   <div class="tools-menu-wrap">
-    <button class="ghost" id="btnToolsMenu">🛠 Werkzeuge</button>
+    <button class="ghost" id="btnToolsMenu">🛠 <span class="btn-label">Werkzeuge</span></button>
     <div class="tools-menu" id="toolsMenu">
       <button id="btnTrainingDrawer">🏷 Trainingsdaten (<span class="count" id="exampleCount">0</span>)</button>
       <button id="btnStillDrawer">📷 Bild-/Video-Erkennung</button>
