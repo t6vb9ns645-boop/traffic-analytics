@@ -842,6 +842,21 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       <div class="sb-body">
         <button id="btnCaptureMode" style="width:100%;">🏷 Beispiel-Modus: Aus</button>
         <div class="diag-msg" id="captureStatus">Aktivieren, dann im Video auf ein erkanntes Objekt klicken, um es zu erfassen.</div>
+        <button id="btnManualCaptureMode" style="width:100%;">📍 Manuell erfassen: Aus</button>
+        <div class="diag-msg" id="manualCaptureStatus">Aktivieren, dann an beliebiger Stelle im Video klicken — erfasst einen Bildausschnitt als unklassifiziertes Beispiel (zur Sichtprüfung, auch über der Warteschlangen-Grenze).</div>
+      </div>
+    </div>
+
+    <div class="sb-section">
+      <div class="sb-head">Kalibrierung nachjustieren</div>
+      <div class="sb-body">
+        <button id="btnCalibAdjustMode" style="width:100%;" disabled>🎯 Referenzpunkte anpassen</button>
+        <div id="calibAdjustList"></div>
+        <div class="row">
+          <button id="btnCalibAdjustConfirm" class="primary" style="flex:1;" disabled>✓ Bestätigen (neu berechnen)</button>
+          <button id="btnCalibAdjustCancel" class="ghost" disabled>✕ Abbrechen</button>
+        </div>
+        <div class="diag-msg" id="calibAdjustStatus">Keine Kalibrierung aktiv.</div>
       </div>
     </div>
 
@@ -1128,6 +1143,13 @@ const btnResetRoi  = document.getElementById('btnResetRoi');
 const roiStatus    = document.getElementById('roiStatus');
 
 const btnCaptureMode    = document.getElementById('btnCaptureMode');
+const btnManualCaptureMode  = document.getElementById('btnManualCaptureMode');
+const manualCaptureStatus   = document.getElementById('manualCaptureStatus');
+const btnCalibAdjustMode    = document.getElementById('btnCalibAdjustMode');
+const calibAdjustList       = document.getElementById('calibAdjustList');
+const btnCalibAdjustConfirm = document.getElementById('btnCalibAdjustConfirm');
+const btnCalibAdjustCancel  = document.getElementById('btnCalibAdjustCancel');
+const calibAdjustStatus     = document.getElementById('calibAdjustStatus');
 const captureStatus     = document.getElementById('captureStatus');
 const btnToolsMenu = document.getElementById('btnToolsMenu');
 const toolsMenu     = document.getElementById('toolsMenu');
@@ -1417,6 +1439,7 @@ function updateCalibSummary(){
     calibSummary.textContent = msg;
     calibSummary.style.color = '';
   }
+  btnCalibAdjustMode.disabled=!calibration;
 }
 
 /* ══════════════════════════════════════════
@@ -2187,6 +2210,93 @@ btnResetCalib.addEventListener('click', () => {
 });
 
 /* ══════════════════════════════════════════
+   Re-adjust calibration reference points directly in the live image. A
+   working draft (calibAdjustPoints) is edited point-by-point — nothing is
+   recomputed until explicitly confirmed, so a bad correction can always be
+   discarded via "Abbrechen" without touching the calibration currently in
+   use. Confirming re-derives the homography from the edited points, the
+   same way either calibration method already does when first created.
+══════════════════════════════════════════ */
+let calibAdjustPoints=null; // [{label, pt:{x,y}, lat?, lng?}]
+let calibAdjustArmed=null;  // label of the point currently armed for a single click
+
+function calibAdjustLabels(){
+  return calibration.nativePoints ? ['A','B','C','D'] : calibration.points.map(p=>p.label);
+}
+btnCalibAdjustMode.addEventListener('click', () => {
+  if(!calibration) return;
+  calibAdjustPoints = calibration.nativePoints
+    ? calibration.nativePoints.map((pt,i)=>({label:calibAdjustLabels()[i], pt:{...pt}}))
+    : calibration.points.map(p=>({label:p.label, pt:{...p.videoPt}, lat:p.lat, lng:p.lng}));
+  calibAdjustArmed=null;
+  btnCalibAdjustMode.disabled=true;
+  btnCalibAdjustConfirm.disabled=false;
+  btnCalibAdjustCancel.disabled=false;
+  calibAdjustStatus.textContent='Punkt zum Neusetzen wählen, dann im Video anklicken. Danach bestätigen.';
+  renderCalibAdjustList();
+});
+function renderCalibAdjustList(){
+  calibAdjustList.innerHTML='';
+  if(!calibAdjustPoints) return;
+  calibAdjustPoints.forEach(p => {
+    const row=document.createElement('div'); row.className='mpcalib-point-row';
+    const lbl=document.createElement('span'); lbl.className='mp-label'; lbl.textContent=p.label;
+    const status=document.createElement('span'); status.className='mp-status';
+    status.textContent=`(${Math.round(p.pt.x)}, ${Math.round(p.pt.y)})`;
+    const bSet=document.createElement('button');
+    bSet.textContent = calibAdjustArmed===p.label ? '… im Video klicken' : '🖊 Neu setzen';
+    bSet.disabled = calibAdjustArmed!==null && calibAdjustArmed!==p.label;
+    bSet.onclick=() => {
+      calibAdjustArmed=p.label;
+      overlay.style.pointerEvents='auto';
+      calibAdjustStatus.textContent=`Punkt ${p.label}: im Video anklicken.`;
+      renderCalibAdjustList();
+    };
+    row.append(lbl,status,bSet);
+    calibAdjustList.appendChild(row);
+  });
+}
+function handleCalibAdjustClick(native){
+  const p=calibAdjustPoints.find(pt=>pt.label===calibAdjustArmed);
+  if(!p) return;
+  p.pt={x:native.x, y:native.y};
+  calibAdjustArmed=null;
+  overlay.style.pointerEvents='none';
+  calibAdjustStatus.textContent=`Punkt ${p.label} neu gesetzt — weitere anpassen oder bestätigen.`;
+  renderCalibAdjustList();
+}
+function exitCalibAdjustMode(){
+  calibAdjustPoints=null; calibAdjustArmed=null;
+  overlay.style.pointerEvents='none';
+  btnCalibAdjustMode.disabled=!calibration;
+  btnCalibAdjustConfirm.disabled=true;
+  btnCalibAdjustCancel.disabled=true;
+  calibAdjustList.innerHTML='';
+}
+btnCalibAdjustCancel.addEventListener('click', () => {
+  exitCalibAdjustMode();
+  calibAdjustStatus.textContent='Anpassung verworfen — vorherige Kalibrierung bleibt aktiv.';
+});
+btnCalibAdjustConfirm.addEventListener('click', () => {
+  if(!calibAdjustPoints) return;
+  if(calibration.nativePoints){
+    const nativePts=calibAdjustPoints.map(p=>p.pt);
+    const ok=applyCalibrationFromPoints(nativePts, calibration.width, calibration.length);
+    if(!ok){ calibAdjustStatus.textContent='Neuberechnung fehlgeschlagen (Punkte kollinear?) — Anpassung beibehalten, erneut korrigieren.'; return; }
+  } else {
+    const points=calibAdjustPoints.map(p=>({label:p.label, videoPt:p.pt, lat:p.lat, lng:p.lng}));
+    const res=applyMultipointCalibration(points);
+    if(!res.ok){ calibAdjustStatus.textContent=res.msg+' Anpassung beibehalten, erneut korrigieren.'; return; }
+    if(video.videoWidth && video.videoHeight){
+      calibDescriptor=buildCalibDescriptorFromMultipoint(points, video.videoWidth, video.videoHeight);
+      saveCalibDescriptor();
+    }
+  }
+  exitCalibAdjustMode();
+  calibAdjustStatus.textContent='Kalibrierung mit angepassten Punkten neu berechnet.';
+});
+
+/* ══════════════════════════════════════════
    Analysis region (ROI polygon)
 ══════════════════════════════════════════ */
 let roiMode=false, roiClicks=[], roiPolygon=null, roiMask=null;
@@ -2366,6 +2476,68 @@ function handleCaptureClick(native){
     return;
   }
   captureExample(best);
+}
+
+/* ══════════════════════════════════════════
+   Manual capture-by-click: unlike Beispiel-Modus above (which only ever
+   captures FROM an already-detected/tracked object), this lets a click
+   anywhere in the live image capture whatever's there as an unclassified
+   example, queued into the same Sichtprüfung ("pending") workflow. It
+   intentionally bypasses the pending-cap/hysteresis gate entirely — a
+   deliberate manual capture should never be silently dropped just because
+   the automatic queue happens to be full.
+══════════════════════════════════════════ */
+let manualCaptureMode=false;
+btnManualCaptureMode.addEventListener('click', () => {
+  manualCaptureMode=!manualCaptureMode;
+  btnManualCaptureMode.textContent = manualCaptureMode ? '📍 Manuell erfassen: An' : '📍 Manuell erfassen: Aus';
+  btnManualCaptureMode.classList.toggle('primary', manualCaptureMode);
+  overlay.style.pointerEvents = manualCaptureMode ? 'auto' : 'none';
+  manualCaptureStatus.textContent = manualCaptureMode
+    ? 'Aktiv: Klicke an eine beliebige Stelle im Video, um dort ein Beispiel zu erfassen.'
+    : 'Aktivieren, dann an beliebiger Stelle im Video klicken — erfasst einen Bildausschnitt als unklassifiziertes Beispiel (zur Sichtprüfung, auch über der Warteschlangen-Grenze).';
+});
+// Real-world width/aspect for a fixed-size box centered on an arbitrary
+// clicked point (no track available here, unlike computeFeatures()).
+function computeFeaturesAtNativePoint(nx,ny,cropW,cropH){
+  const aspect = (cropW>0&&cropH>0) ? +((cropH>=cropW?cropH/cropW:cropW/cropH).toFixed(2)) : null;
+  let widthM=null;
+  if(calibration){
+    const pL=applyH(calibration.H,nx-cropW/2,ny), pR=applyH(calibration.H,nx+cropW/2,ny);
+    widthM=+Math.hypot(pR.x-pL.x,pR.y-pL.y).toFixed(2);
+  }
+  return { areaPx:Math.round(cropW*cropH), wPx:Math.round(cropW), hPx:Math.round(cropH), aspect, widthM };
+}
+function cropPreviewAtNativePoint(nx,ny,cropW,cropH){
+  const vw=video.videoWidth, vh=video.videoHeight;
+  if(!vw||!vh) return null;
+  const cw=Math.min(vw,cropW), ch=Math.min(vh,cropH);
+  const sxp=Math.max(0,Math.min(vw-cw,nx-cw/2));
+  const syp=Math.max(0,Math.min(vh-ch,ny-ch/2));
+  const maxDim=480;
+  let outW,outH;
+  if(cw>=ch){ outW=Math.min(maxDim,Math.round(cw)); outH=Math.max(1,Math.round(outW*ch/cw)); }
+  else { outH=Math.min(maxDim,Math.round(ch)); outW=Math.max(1,Math.round(outH*cw/ch)); }
+  const crop=document.createElement('canvas');
+  crop.width=outW; crop.height=outH;
+  crop.getContext('2d').drawImage(video,sxp,syp,cw,ch,0,0,crop.width,crop.height);
+  return crop.toDataURL('image/jpeg',0.75);
+}
+function handleManualCaptureClick(native){
+  if(!hasSource){ manualCaptureStatus.textContent='Keine Videoquelle geladen.'; return; }
+  // "geeignet großer Bildausschnitt" — the same minimum size already
+  // required of auto-captures, so manual and automatic examples are
+  // consistently useful for training regardless of how they were collected.
+  const feat=computeFeaturesAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
+  const preview=cropPreviewAtNativePoint(native.x,native.y,MIN_CAPTURE_CROP_W,MIN_CAPTURE_CROP_H);
+  const ex={
+    id:exampleNextId++, label:'Sonstiges', feat, capturedAt:new Date().toISOString(),
+    _preview:preview, source:'manual'
+  };
+  pendingAutoSamples.push(ex); // deliberately bypasses PENDING_CAP/pendingCapturePaused
+  renderPendingList();
+  saveLearningState();
+  manualCaptureStatus.textContent=`Manuell erfasst (#${ex.id}) — zur Sichtprüfung hinzugefügt, noch unklassifiziert.`;
 }
 
 // Derive a small numeric feature profile from the track — this, not a
@@ -3045,6 +3217,8 @@ overlay.addEventListener('click', ev => {
   if(roiMode){ handleRoiClick(native); return; }
   if(calibrationMode){ handleCalibClick(native); return; }
   if(captureMode){ handleCaptureClick(native); return; }
+  if(manualCaptureMode){ handleManualCaptureClick(native); return; }
+  if(calibAdjustArmed){ handleCalibAdjustClick(native); return; }
 });
 
 /* ══════════════════════════════════════════
@@ -3918,6 +4092,20 @@ function renderOverlay(){
       const d=nativeToDisplay(p.videoPt.x,p.videoPt.y);
       octx.beginPath(); octx.arc(d.x,d.y,4,0,Math.PI*2); octx.fill();
       octx.fillText(p.label,d.x+6,d.y-6);
+    });
+    octx.restore();
+  }
+
+  if(currentView==='live'&&calibAdjustPoints){
+    // Draft points being re-adjusted — drawn distinctly (magenta) on top of
+    // the still-active calibration's own overlay above, so both the current
+    // and the not-yet-confirmed positions are visible at once.
+    octx.save(); octx.fillStyle='#ff5dd8'; octx.strokeStyle='#ff5dd8'; octx.font='bold 12px monospace';
+    calibAdjustPoints.forEach(p => {
+      const d=nativeToDisplay(p.pt.x,p.pt.y);
+      octx.beginPath(); octx.arc(d.x,d.y,6,0,Math.PI*2);
+      if(p.label===calibAdjustArmed){ octx.lineWidth=2; octx.stroke(); } else { octx.fill(); }
+      octx.fillText(p.label,d.x+8,d.y-8);
     });
     octx.restore();
   }
