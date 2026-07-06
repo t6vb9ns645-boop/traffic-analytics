@@ -3610,6 +3610,11 @@ overlay.addEventListener('mousemove', ev => {
   if(!dragSelectActive) return;
   const rect=overlay.getBoundingClientRect();
   dragSelectCurrent={x:ev.clientX-rect.left, y:ev.clientY-rect.top};
+  // Draw immediately instead of waiting for the next analysis frame — at a
+  // few fps (typical during live analysis) that made the drag rectangle
+  // barely visible/very laggy. renderOverlay() only reads current state, so
+  // calling it directly here is safe regardless of the analysis loop's timing.
+  renderOverlay();
 });
 window.addEventListener('mouseup', ev => {
   if(!dragSelectActive) return;
@@ -4249,14 +4254,23 @@ function step(){
 
   const visited=new Uint8Array(n), blobs=[];
   const qx=new Int16Array(n), qy=new Int16Array(n);
+  // Headlight/reflection glare in night mode overwhelmingly enters at the
+  // frame edges (a car's headlights sweeping in before the vehicle itself
+  // is visible, or glare off a wet road right at the border) and reads as
+  // a near-saturated-bright blob after the contrast stretch — unlike a real
+  // object's own motion blob, which is bright relative to its surroundings
+  // but not uniformly near white. Only checked in night mode since normal
+  // lighting doesn't produce this pattern.
+  const edgeMarginX=PW*0.05, edgeMarginY=PH*0.05, GLARE_BRIGHTNESS=215;
   for(let y=0;y<PH;y++) for(let x=0;x<PW;x++){
     const idx=y*PW+x;
     if(mask[idx]&&!visited[idx]){
       let qs=0,qe=0;
       qx[qe]=x;qy[qe]=y;qe++;visited[idx]=1;
-      let minX=x,maxX=x,minY=y,maxY=y,count=0;
+      let minX=x,maxX=x,minY=y,maxY=y,count=0,brightSum=0;
       while(qs<qe){
         const cx=qx[qs],cy=qy[qs];qs++;count++;
+        brightSum+=gray[cy*PW+cx];
         if(cx<minX)minX=cx;if(cx>maxX)maxX=cx;
         if(cy<minY)minY=cy;if(cy>maxY)maxY=cy;
         for(const [nx,ny] of [[cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1]]){
@@ -4269,7 +4283,12 @@ function step(){
       const bw=maxX-minX+1,bh=maxY-minY+1;
       const minA=parseInt(minAreaSlider.value,10);
       const elong=Math.max(bw/bh,bh/bw);
-      if(count>=minA&&count<n*0.35&&elong<5.5)
+      let isEdgeGlare=false;
+      if(nightModeEl.checked){
+        const nearEdge=minX<edgeMarginX||maxX>PW-edgeMarginX||minY<edgeMarginY||maxY>PH-edgeMarginY;
+        isEdgeGlare=nearEdge && (brightSum/count)>GLARE_BRIGHTNESS;
+      }
+      if(count>=minA&&count<n*0.35&&elong<5.5&&!isEdgeGlare)
         blobs.push({cx:(minX+maxX)/2,cy:(minY+maxY)/2,w:bw,h:bh,area:count});
     }
   }
@@ -4548,9 +4567,16 @@ function renderOverlay(){
     // native-pixel and need nativeToDisplay().
     const x0=Math.min(dragSelectStart.x,dragSelectCurrent.x), y0=Math.min(dragSelectStart.y,dragSelectCurrent.y);
     const w=Math.abs(dragSelectCurrent.x-dragSelectStart.x), h=Math.abs(dragSelectCurrent.y-dragSelectStart.y);
+    const color = deselectMode ? '#ff5d5d' : '#28e0c5';
     octx.save();
-    octx.strokeStyle = deselectMode ? '#ff5d5d' : '#28e0c5';
-    octx.setLineDash([6,4]); octx.lineWidth=2;
+    // A thin dashed line alone was easy to miss against a busy video frame
+    // — a translucent fill plus an outer dark halo/inner bright stroke
+    // makes the marked area clearly visible against any background.
+    octx.fillStyle = color+'33';
+    octx.fillRect(x0,y0,w,h);
+    octx.strokeStyle='rgba(0,0,0,.85)'; octx.lineWidth=4; octx.setLineDash([]);
+    octx.strokeRect(x0,y0,w,h);
+    octx.strokeStyle=color; octx.lineWidth=2; octx.setLineDash([6,4]);
     octx.strokeRect(x0,y0,w,h);
     octx.restore();
   }
