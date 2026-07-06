@@ -169,7 +169,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
   background:var(--panel);
 }
 .app-body.mode-live .live-sidebar{display:flex;}
-.sb-section{background:var(--panel-2);border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+.sb-section{background:var(--panel-2);border:1px solid var(--line);border-radius:8px;overflow:hidden;flex-shrink:0;}
 .sb-head{
   display:flex;align-items:center;justify-content:space-between;
   padding:7px 11px;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
@@ -860,7 +860,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       </div>
     </div>
 
-    <div style="margin-top:auto;display:flex;flex-direction:column;gap:5px;">
+    <div style="margin-top:auto;flex-shrink:0;display:flex;flex-direction:column;gap:5px;">
       <button class="ghost" id="btnBackToSettings" style="width:100%;font-size:11px;">← Einstellungen</button>
     </div>
 
@@ -1224,6 +1224,7 @@ const stillResultList     = document.getElementById('stillResultList');
 
 const appBody         = document.getElementById('appBody');
 const contentCol      = document.getElementById('contentCol');
+const liveSidebar     = document.getElementById('liveSidebar');
 const cameraDiag      = document.getElementById('cameraDiag');
 const sourceMsg       = document.getElementById('sourceMsg');
 const btnToStep2      = document.getElementById('btnToStep2');
@@ -1252,9 +1253,13 @@ function goToStep(target){
     if(p) p.classList.add('active');
   }
   // always land at the top of the new step — otherwise the content column
-  // keeps whatever scroll position the previous step was left at, which can
-  // hide the first section(s) of the step the user just navigated to
+  // (or the live sidebar, which is the same underlying issue: a persistent
+  // element that keeps whatever scroll position a previous visit left it
+  // at) keeps showing wherever it was last scrolled to, which can make
+  // earlier sections look like they're missing/overlapping with whatever
+  // is currently in view
   contentCol.scrollTop = 0;
+  liveSidebar.scrollTop = 0;
 
   // layout mode
   if(target === 'live'){
