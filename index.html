@@ -1,0 +1,1611 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verkehrsanalyse — Bewegungs-Heatmap</title>
+<style>
+  :root{
+    --bg:#0a0d10;
+    --panel:#12171c;
+    --panel-2:#181f26;
+    --line:#232c33;
+    --text:#dbe4e9;
+    --dim:#7a8a94;
+    --accent:#28e0c5;
+    --accent-2:#ffb020;
+    --danger:#ff5d5d;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text); font-family:var(--sans);
+    min-height:100vh;
+  }
+  header{
+    padding:18px 22px 14px; border-bottom:1px solid var(--line);
+    display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px;
+  }
+  header h1{
+    font-size:15px; letter-spacing:.14em; text-transform:uppercase; margin:0;
+    font-weight:600; color:var(--text);
+  }
+  header h1 span{color:var(--accent);}
+  header .sub{font-size:11.5px; color:var(--dim); font-family:var(--mono);}
+  .layout{
+    display:grid; grid-template-columns: minmax(0,1fr) 300px; gap:16px; padding:16px 22px 28px;
+    max-width:1280px; margin:0 auto;
+  }
+  @media (max-width: 880px){ .layout{grid-template-columns:1fr;} }
+
+  .stage{
+    background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px;
+  }
+  .video-wrap{
+    position:relative; width:100%; background:#000; border-radius:6px; overflow:hidden;
+    border:1px solid var(--line); aspect-ratio:4/3;
+  }
+  .video-wrap video, .video-wrap canvas{
+    position:absolute; top:0; left:0; width:100%; height:100%; object-fit:contain;
+  }
+  #srcVideo{ z-index:1; }
+  #overlay{ z-index:2; pointer-events:none; }
+
+  .empty-hint{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:var(--dim); font-size:12.5px; text-align:center; padding:20px; z-index:3; font-family:var(--mono);
+  }
+
+  .toolbar{
+    display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; align-items:center;
+  }
+  button{
+    background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+    padding:8px 12px; border-radius:6px; font-size:12.5px; cursor:pointer; font-family:var(--sans);
+    transition:border-color .15s, color .15s;
+  }
+  button:hover{ border-color:var(--accent); color:var(--accent); }
+  button.primary{ background:var(--accent); color:#04211d; border-color:var(--accent); font-weight:600; }
+  button.primary:hover{ color:#04211d; filter:brightness(1.08); }
+  button.stop{ background:var(--danger); border-color:var(--danger); color:#2a0505; font-weight:600;}
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+  input[type=text]{
+    background:var(--panel-2); border:1px solid var(--line); color:var(--text);
+    padding:8px 10px; border-radius:6px; font-size:12.5px; font-family:var(--mono); flex:1; min-width:160px;
+  }
+  input[type=file]{ font-size:12px; color:var(--dim); max-width:200px; }
+
+  .row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;}
+  .row label{ font-size:11.5px; color:var(--dim); font-family:var(--mono); }
+
+  .view-toggle{ display:flex; gap:6px; margin-top:12px; }
+  .view-toggle button{ flex:1; }
+  .view-toggle button.active{ background:var(--accent); color:#04211d; border-color:var(--accent); font-weight:600;}
+
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px;
+    display:flex; flex-direction:column; gap:16px; height:fit-content;
+  }
+  .panel h2{
+    font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:0 0 8px;
+    border-bottom:1px solid var(--line); padding-bottom:8px;
+  }
+  .stat-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .stat{ background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .stat .n{ font-family:var(--mono); font-size:22px; color:var(--accent); line-height:1; }
+  #statAvgSpeed, #statMaxSpeed{ font-size:13px; line-height:1.3; word-break:break-word; }
+  .stat .l{ font-size:10.5px; color:var(--dim); margin-top:4px; text-transform:uppercase; letter-spacing:.06em;}
+
+  .class-row{ display:flex; justify-content:space-between; font-size:12.5px; padding:5px 0; border-bottom:1px dashed var(--line); }
+  .class-row:last-child{ border-bottom:none; }
+  .class-row .dot{ display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:7px; }
+
+  .slider-row{ display:flex; flex-direction:column; gap:4px; }
+  .slider-row .lbl{ display:flex; justify-content:space-between; font-size:11.5px; color:var(--dim); font-family:var(--mono); }
+  input[type=range]{ width:100%; accent-color:var(--accent); }
+
+  .note{
+    font-size:11.5px; color:var(--dim); line-height:1.55; background:var(--panel-2);
+    border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+  }
+  .note b{ color:var(--text); }
+  .legend{ display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:10.5px; color:var(--dim); }
+  .legend .bar{ height:8px; flex:1; border-radius:4px;
+    background:linear-gradient(90deg,#0b3d91 0%, #1f9e8f 25%, #28e0c5 45%, #ffe066 65%, #ff8a3d 82%, #ff4d4d 100%); }
+
+  footer{ text-align:center; padding:14px; color:var(--dim); font-size:10.5px; font-family:var(--mono); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Verkehrs<span>analyse</span> · Bewegungs-Heatmap Prototyp</h1>
+  <div class="sub" id="clock">Status: bereit</div>
+</header>
+
+<div class="layout">
+
+  <div class="stage">
+    <div class="video-wrap">
+      <video id="srcVideo" muted playsinline></video>
+      <canvas id="overlay"></canvas>
+      <div class="empty-hint" id="emptyHint">Keine Quelle geladen.<br>Kamera auswählen &amp; starten, Video hochladen oder Stream-URL laden.</div>
+    </div>
+
+    <div class="toolbar">
+      <select id="cameraSelect" style="background:var(--panel-2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px 10px; font-size:12.5px; min-width:180px;">
+        <option>Kameras werden gesucht …</option>
+      </select>
+      <button id="btnRequestPermission">🔓 Kamerazugriff anfragen / Liste aktualisieren</button>
+      <button id="btnWebcam">📷 Kamera starten</button>
+      <input type="file" id="fileInput" accept="video/*">
+      <input type="text" id="urlInput" placeholder="Stream-/Video-URL (benötigt CORS-Freigabe)">
+      <button id="btnUrl">URL laden</button>
+    </div>
+    <div class="row">
+      <span id="cameraDiag" style="font-size:11.5px; color:var(--dim); font-family:var(--mono);">Kamerastatus: noch nicht geprüft</span>
+    </div>
+    <div class="row" id="transportRow" style="display:none;">
+      <button id="btnPlayPause">⏸ Pause</button>
+      <button id="btnRewind">⏪ 5s</button>
+      <button id="btnForward">5s ⏩</button>
+      <input type="range" id="seekSlider" min="0" max="1000" value="0" style="flex:1; min-width:160px;">
+      <span id="timeLabel" style="font-family:var(--mono); font-size:11px; color:var(--dim);">00:00 / 00:00</span>
+    </div>
+    <div class="row">
+      <button id="btnStart" class="primary" disabled>▶ Analyse starten</button>
+      <button id="btnStop" class="stop" disabled>■ Stop</button>
+      <button id="btnResetHeatmap">Heatmap zurücksetzen</button>
+      <button id="btnExport">⤓ Trajektorien als JSON exportieren</button>
+    </div>
+    <div class="row">
+      <button id="btnCalibrate">📐 Perspektive kalibrieren (4 Punkte im Video anklicken)</button>
+      <button id="btnResetCalib" disabled>Kalibrierung zurücksetzen</button>
+      <span id="calibStatus" style="font-size:11.5px;color:var(--dim);font-family:var(--mono);">unkalibriert · Anzeige: px/s (relativ)</span>
+    </div>
+    <div class="row">
+      <button id="btnAnalyzeLanes">📸 Fahrbahn aus Standbild analysieren</button>
+      <select id="widthPreset" style="background:var(--panel-2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px 10px; font-size:12.5px;">
+        <option value="3.0">Breiten-Vorschlag: Innerorts/Landstraße ≈ 3,0 m (RSA 21)</option>
+        <option value="3.5">Breiten-Vorschlag: Autobahn ≈ 3,5 m (RAA)</option>
+      </select>
+    </div>
+    <div class="row" id="horizonRow">
+      <div class="slider-row" style="flex:1; min-width:200px;">
+        <div class="lbl"><span>Horizont-Grenze (alles darüber wird ignoriert — schließt Gebäude/Himmel aus)</span><span id="horizonVal">45%</span></div>
+        <input type="range" id="horizonSlider" min="20" max="85" value="45">
+      </div>
+      <label style="font-size:11.5px; color:var(--dim); font-family:var(--mono); display:flex; align-items:center; gap:6px;">
+        <input type="checkbox" id="markingModeToggle"> nur Markierungen (weiß/gelb) statt aller Kanten
+      </label>
+    </div>
+    <div id="laneAnalysisWrap" style="display:none; margin-top:8px;">
+      <canvas id="laneCanvas" style="width:100%; max-width:480px; display:block; border:1px solid var(--line); border-radius:6px; background:#000;"></canvas>
+      <div class="row">
+        <span id="laneStatus" style="font-size:11.5px;color:var(--dim);font-family:var(--mono); flex:1;"></span>
+        <button id="btnApplyLaneSuggestion" disabled>✓ Vorschlag als Kalibrierung übernehmen</button>
+      </div>
+    </div>
+
+    <div class="view-toggle">
+      <button id="viewLive" class="active">Live + Erkennung</button>
+      <button id="viewDensity">Dichte-Heatmap</button>
+      <button id="viewFlow">Flow-Heatmap</button>
+      <button id="viewSpeed">Geschwindigkeit</button>
+    </div>
+
+    <div class="row" style="margin-top:14px;">
+      <div class="slider-row" style="flex:1; min-width:180px;">
+        <div class="lbl"><span>Bewegungs-Sensitivität</span><span id="sensVal">22</span></div>
+        <input type="range" id="sensSlider" min="8" max="60" value="22">
+      </div>
+      <div class="slider-row" style="flex:1; min-width:180px;">
+        <div class="lbl"><span>Min. Objektgröße (px²)</span><span id="minAreaVal">18</span></div>
+        <input type="range" id="minAreaSlider" min="6" max="80" value="18">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px; align-items:flex-start;">
+      <div style="font-family:var(--mono); font-size:11px; color:var(--dim); flex:1; min-width:220px;">
+        <div id="diagLine">Frame #– · noch keine Analyse gelaufen</div>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:3px;">
+        <span style="font-size:10px; color:var(--dim); font-family:var(--mono);">Bewegungsmaske (Live-Debug)</span>
+        <canvas id="debugMask" width="160" height="120" style="width:160px;height:120px;background:#000;border:1px solid var(--line);border-radius:4px;image-rendering:pixelated;"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div>
+      <h2>Live-Status</h2>
+      <div class="stat-grid">
+        <div class="stat"><div class="n" id="statActive">0</div><div class="l">Aktive Objekte</div></div>
+        <div class="stat"><div class="n" id="statTotal">0</div><div class="l">Gesamt erfasst</div></div>
+        <div class="stat"><div class="n" id="statAvgSpeed">–</div><div class="l">Ø Geschwindigkeit</div></div>
+        <div class="stat"><div class="n" id="statMaxSpeed">–</div><div class="l">Max. Geschwindigkeit</div></div>
+      </div>
+    </div>
+
+    <div>
+      <h2>Klassifizierung (Heuristik)</h2>
+      <div id="classList">
+        <div class="class-row"><span><span class="dot" style="background:#c084fc"></span>Motorrad/Fahrrad</span><span id="cMoto">0</span></div>
+        <div class="class-row"><span><span class="dot" style="background:#28e0c5"></span>PKW</span><span id="cCar">0</span></div>
+        <div class="class-row"><span><span class="dot" style="background:#ffb020"></span>LKW/Bus</span><span id="cTruck">0</span></div>
+        <div class="class-row"><span><span class="dot" style="background:#4ade80"></span>Person</span><span id="cPerson">0</span></div>
+        <div class="class-row"><span><span class="dot" style="background:#5a6570"></span>Störung (Regen/Schmutz, verworfen)</span><span id="cNoise">0</span></div>
+      </div>
+    </div>
+
+    <div>
+      <h2>Heatmap-Skala</h2>
+      <div class="legend"><span>niedrig</span><div class="bar"></div><span>hoch</span></div>
+    </div>
+
+    <div class="note">
+      <b>Funktionsweise:</b> Die Erkennung basiert auf Bewegungsanalyse (Frame-Differencing gegen ein adaptives Hintergrundmodell), nicht auf einem trainierten neuronalen Netz. Zur Verbesserung der Erkennungsqualität laufen zusätzlich: <b>Weichzeichnung</b> vor der Differenzbildung (unterdrückt Sensor-/Kompressionsrauschen), <b>morphologisches Öffnen/Schließen</b> der Bewegungsmaske (entfernt kleine Störflecken, verschmilzt fragmentierte Fahrzeugteile zu einem Blob), ein <b>Formfilter</b> gegen extrem längliche Objekte (z. B. wehende Äste) und eine <b>Bestätigungslogik</b>: ein Objekt zählt erst als Fahrzeug, wenn es mehrere Frames in Folge erkannt wurde — einzelne Flacker-Treffer werden nicht mitgezählt. Das verbessert die Erkennung spürbar, ersetzt aber weiterhin kein trainiertes Objekterkennungsmodell. Die Klassifizierung nach Fahrzeugtyp bleibt eine <b>Heuristik anhand der Objektgröße</b> — keine echte KI-Bilderkennung. Für präzisere Klassifizierung eignet sich in einer späteren Repo-Version ein trainiertes Modell (z. B. TensorFlow.js/COCO-SSD oder YOLO serverseitig).
+    </div>
+    <div class="note">
+      <b>Geschwindigkeit & Perspektive:</b> Standardmäßig relativ in <b>px/s</b> (Bewegung in echten Video-Pixeln/Sekunde) — vergleichbar zwischen Fahrzeugen, aber keine reale Einheit. Bei gesetzter Kalibrierung werden zusätzlich <b>m/s</b> und <b>km/h</b> angezeigt. Über "📸 Fahrbahn aus Standbild analysieren" wird aus einem Einzelbild per Kantenerkennung + Linienerkennung (Sobel + Hough-Transformation) automatisch ein Vorschlag für die 4 Kalibrierpunkte erstellt — die <b>Pixel-Positionen und -Abstände werden dabei vollautomatisch ermittelt</b>, du musst nichts abmessen. Für die reale Breite gibt es einen recherchierten Richtwert-Vorschlag (Regelbreite 3,0 m innerorts/Landstraße nach RSA 21, bzw. 3,5 m auf Autobahnen). <b>Die reale Länge/Tiefe des Rechtecks kann dagegen nicht automatisch aus einem einzigen Bild ermittelt werden</b> — aus einem 2D-Bild ohne zweite bekannte Referenzgröße ist der Maßstab entlang dieser Achse grundsätzlich nicht bestimmbar (Skalen-Mehrdeutigkeit bei monokularen Kameras). Diesen Wert musst du weiterhin selbst eintragen (z. B. per Zollstock/Kartenmaterial gemessen). Voraussetzung für die gesamte Kalibrierung: die 4 Punkte liegen auf einer <b>ebenen Fläche</b> (Straße ohne Steigung).
+    </div>
+    <div class="note">
+      <b>Gebäude bei der Fahrbahnerkennung ausblenden:</b> Der <b>Horizont-Slider</b> schneidet den oberen Bildbereich (typischerweise Gebäude/Himmel bei einer nach vorne gerichteten Kamera) vollständig von der Analyse ab — das ist eine <b>Bereichs-Einschränkung, keine echte Gebäude-Erkennung</b>. Klassische Kantenerkennung kann eine Hauswand nicht von einer Fahrbahnkante unterscheiden; wenn Gebäude auch unterhalb der eingestellten Grenze im Bild stehen (z. B. bei einer seitlichen oder sehr flachen Kameraperspektive), hilft nur ein tieferer Horizont-Wert oder ein anderes Standbild. Der Schalter <b>"nur Markierungen"</b> sucht zusätzlich gezielt nach Bildpunkten, die <b>heller als ihre Umgebung</b> sind (wie Fahrbahnmarkierungen auf Asphalt) statt nach beliebigen Kanten — das reduziert Treffer an Fensterrahmen/Dachkanten weiter, unterscheidet aber nicht nach Farbe (Weiß/Gelb) und kann bei sehr hellem Belag oder Schnee ebenfalls Fehltreffer liefern. Eine echte Pylonen-/Baustellenmarkierungs-Erkennung braucht farbige Objekterkennung (z. B. Orange-Ton-Klassifikation) — das habe ich noch nicht gebaut, weil die Zuverlässigkeit einer reinen Farbheuristik dafür fraglich ist; sag Bescheid, wenn du es trotzdem als Bestenfalls-Versuch möchtest.
+    </div>
+    <div class="note">
+      <b>Fahrzeuge/Personen vs. Störungen (z. B. Regentropfen auf der Scheibe):</b> Kleine, annähernd runde Objekte werden zusätzlich anhand ihrer Bewegungsrichtung geprüft — nur wenn eine Perspektiv-Kalibrierung vorliegt, kennt die App die erwartete Fahrbahnrichtung. Bewegt sich ein kleines rundes Objekt deutlich quer zu dieser Richtung (z. B. ein an der Scheibe herunterlaufender Tropfen), wird es als "Störung" markiert und <b>nicht</b> als Fahrzeug gezählt. Hochkant-Objekte (deutlich höher als breit) werden als "Person" klassifiziert. Das ist eine Formen-/Richtungs-Heuristik, keine echte Objekterkennung — sie kann sowohl echte langsame Querbewegungen (z. B. kreuzende Fußgänger) fälschlich als Störung markieren als auch nicht jeden Tropfen erwischen, besonders ohne Kalibrierung.
+    </div>
+    <div class="note">
+      <b>Ist das echte Analyse oder nur eine Demo?</b> Unter dem Video zeigt "Frame #…" live die tatsächlich verarbeitete Framenummer, den Verarbeitungszeitpunkt und die gemessene Analyse-Rate — das ändert sich nur, wenn wirklich neue Videoframes verarbeitet werden. Das kleine Schwarz-Weiß-Bild daneben zeigt die reale Bewegungsmaske (Pixel-Differenz zum Hintergrund) des aktuellen Frames — bei Bewegung im Bild verändert sie sich unmittelbar sichtbar. Das ist die direkte Kontrolle, dass hier echte Pixelanalyse läuft und keine feste Animation.
+    </div>
+    <div class="note">
+      <b>Hinweis Stream-URL:</b> Externe Video-/Kamera-Streams lassen sich nur analysieren, wenn der Server CORS-Header sendet. Ohne das bleibt das Video sichtbar, aber die Pixel-Analyse wird vom Browser blockiert ("tainted canvas"). Für einen zuverlässigen Test: Webcam oder lokale Videodatei nutzen.
+    </div>
+  </div>
+</div>
+
+<footer>Client-seitiger Prototyp · keine Serverkommunikation · Export-JSON ist so strukturiert, dass er später direkt an eine API/Datenbank übergeben werden kann.</footer>
+
+<script>
+(function(){
+  const video = document.getElementById('srcVideo');
+  const overlay = document.getElementById('overlay');
+  const octx = overlay.getContext('2d');
+  const emptyHint = document.getElementById('emptyHint');
+
+  const btnWebcam = document.getElementById('btnWebcam');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const fileInput = document.getElementById('fileInput');
+  const urlInput = document.getElementById('urlInput');
+  const btnUrl = document.getElementById('btnUrl');
+  const btnStart = document.getElementById('btnStart');
+  const btnStop = document.getElementById('btnStop');
+  const btnResetHeatmap = document.getElementById('btnResetHeatmap');
+  const btnExport = document.getElementById('btnExport');
+  const clockEl = document.getElementById('clock');
+
+  const transportRow = document.getElementById('transportRow');
+  const btnPlayPause = document.getElementById('btnPlayPause');
+  const btnRewind = document.getElementById('btnRewind');
+  const btnForward = document.getElementById('btnForward');
+  const seekSlider = document.getElementById('seekSlider');
+  const timeLabel = document.getElementById('timeLabel');
+
+  const viewLive = document.getElementById('viewLive');
+  const viewDensity = document.getElementById('viewDensity');
+  const viewFlow = document.getElementById('viewFlow');
+  const viewSpeed = document.getElementById('viewSpeed');
+
+  const btnCalibrate = document.getElementById('btnCalibrate');
+  const btnResetCalib = document.getElementById('btnResetCalib');
+  const calibStatus = document.getElementById('calibStatus');
+  const statAvgSpeed = document.getElementById('statAvgSpeed');
+  const statMaxSpeed = document.getElementById('statMaxSpeed');
+
+  let calibrationMode = false;
+  let calibClicks = [];     // native video-pixel coords, up to 4
+  let calibration = null;   // { H, Hinv, W, L, nativePoints:[4 x {x,y}] }
+  let sumSpeedSamples = 0, cntSpeedSamples = 0, maxSpeedSession = 0; // calibration-aware metric (px/s or km/h), used for heatmap legend
+  let sumPxAlways = 0, cntPxAlways = 0, maxPxAlways = 0;             // always px/s, independent of calibration
+
+  const diagLine = document.getElementById('diagLine');
+  const debugMask = document.getElementById('debugMask');
+  const dctx = debugMask.getContext('2d');
+  let lastFrameTime = null;
+  let measuredFps = 0;
+
+  const sensSlider = document.getElementById('sensSlider');
+  const sensVal = document.getElementById('sensVal');
+  const minAreaSlider = document.getElementById('minAreaSlider');
+  const minAreaVal = document.getElementById('minAreaVal');
+
+  const statActive = document.getElementById('statActive');
+  const statTotal = document.getElementById('statTotal');
+  const cMoto = document.getElementById('cMoto');
+  const cCar = document.getElementById('cCar');
+  const cTruck = document.getElementById('cTruck');
+  const cPerson = document.getElementById('cPerson');
+  const cNoise = document.getElementById('cNoise');
+  let noiseCount = 0;
+
+  let currentView = 'live';
+  let hasSource = false;
+  let analyzing = false;
+  let corsBlocked = false;
+
+  // Processing resolution (fixed, small for perf)
+  const PW = 160, PH = 120;
+  const proc = document.createElement('canvas');
+  proc.width = PW; proc.height = PH;
+  const pctx = proc.getContext('2d', { willReadFrequently:true });
+
+  let bg = null;           // Float32Array background model (grayscale)
+  let frameCount = 0;
+  let tracks = [];         // active tracks
+  let nextId = 1;
+  let allVehicles = [];    // completed + active, for export
+
+  // Heatmap grids (same res as processing grid)
+  let densityGrid = new Float32Array(PW*PH);
+  let flowDX = new Float32Array(PW*PH);
+  let flowDY = new Float32Array(PW*PH);
+  let flowN  = new Float32Array(PW*PH);
+  let speedSum = new Float32Array(PW*PH);
+  let speedN   = new Float32Array(PW*PH);
+
+  function setClock(msg){ clockEl.textContent = 'Status: ' + msg; }
+
+  function sizeOverlay(){
+    const rect = video.getBoundingClientRect();
+    overlay.width = rect.width;
+    overlay.height = rect.height;
+  }
+  window.addEventListener('resize', sizeOverlay);
+
+  function showSource(seekableHint){
+    hasSource = true;
+    emptyHint.style.display = 'none';
+    btnStart.disabled = false;
+    if(seekableHint === false) transportRow.style.display = 'none';
+    sizeOverlay();
+  }
+
+  // ---------- Camera enumeration (real device list) ----------
+  let currentStream = null;
+  const cameraDiag = document.getElementById('cameraDiag');
+  const btnRequestPermission = document.getElementById('btnRequestPermission');
+
+  function diag(msg){ cameraDiag.textContent = 'Kamerastatus: ' + msg; }
+
+  async function refreshCameraList(){
+    if(!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices){
+      diag('navigator.mediaDevices ist in diesem Kontext nicht verfügbar (kein sicherer Kontext/HTTPS, oder API vom Browser hier blockiert).');
+      cameraSelect.innerHTML = '<option>nicht verfügbar</option>';
+      cameraSelect.disabled = true;
+      return;
+    }
+    try{
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === 'videoinput');
+      const prevValue = cameraSelect.value;
+      cameraSelect.innerHTML = '';
+      if(cams.length === 0){
+        const opt = document.createElement('option');
+        opt.textContent = 'Keine Kamera gefunden';
+        cameraSelect.appendChild(opt);
+        cameraSelect.disabled = true;
+        diag('0 Video-Eingabegeräte gemeldet. Das bedeutet entweder: keine Kamera am Gerät, ODER der Zugriff wird von der aktuellen Umgebung blockiert (z. B. eingebettete Vorschau ohne Kamera-Freigabe). Klicke "Kamerazugriff anfragen" — die dortige Fehlermeldung zeigt die genaue Ursache.');
+        return;
+      }
+      cams.forEach((c, i) => {
+        const opt = document.createElement('option');
+        opt.value = c.deviceId;
+        opt.textContent = c.label || `Kamera ${i+1} (Name erst nach Freigabe sichtbar)`;
+        cameraSelect.appendChild(opt);
+      });
+      cameraSelect.disabled = false;
+      if(cams.some(c => c.deviceId === prevValue)) cameraSelect.value = prevValue;
+      const labeled = cams.some(c => c.label);
+      diag(`${cams.length} Kamera(s) gefunden${labeled ? '' : ' (Namen noch verborgen, bis Zugriff erteilt wurde)'}.`);
+    }catch(e){
+      diag('Fehler beim Auslesen der Geräteliste: ' + e.name + ' – ' + e.message);
+    }
+  }
+
+  btnRequestPermission.addEventListener('click', async () => {
+    diag('frage Kamerazugriff an …');
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      diag('getUserMedia ist hier nicht verfügbar. Wahrscheinliche Ursache: diese Seite läuft in einer eingebetteten Vorschau (z. B. Claude-Artefakt-iFrame), die Kamerazugriff aus Sicherheitsgründen nicht an eingebettete Inhalte weitergibt. Lösung: diese HTML-Datei herunterladen und direkt im Browser öffnen (nicht in der Chat-Vorschau) — dort läuft sie als normale Seite ohne diese Einschränkung.');
+      return;
+    }
+    try{
+      // request a throwaway stream purely to trigger the permission prompt
+      // and unlock real device labels; stop it immediately afterwards.
+      const probe = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+      probe.getTracks().forEach(t => t.stop());
+      diag('Zugriff erteilt, aktualisiere Geräteliste …');
+      await refreshCameraList();
+    }catch(e){
+      let hint = '';
+      if(e.name === 'NotAllowedError') hint = ' Vermutlich wurde der Zugriff verweigert, ODER die Umgebung (eingebettete Vorschau) leitet Kamera-Berechtigungen gar nicht erst weiter. In dem Fall hilft nur: Datei herunterladen und direkt im Browser öffnen.';
+      if(e.name === 'NotFoundError') hint = ' Es wurde keine Kamera-Hardware gefunden.';
+      if(e.name === 'SecurityError') hint = ' Zugriff durch Sicherheitsrichtlinie (Permissions Policy) der aktuellen Umgebung blockiert — typisch für eingebettete iFrames ohne Kamera-Freigabe. Datei lokal öffnen, nicht in der Vorschau.';
+      diag(e.name + ': ' + e.message + hint);
+    }
+  });
+
+  refreshCameraList();
+  if(navigator.mediaDevices && navigator.mediaDevices.addEventListener){
+    navigator.mediaDevices.addEventListener('devicechange', refreshCameraList);
+  }
+
+  async function startWebcam(deviceId){
+    try{
+      if(currentStream){
+        currentStream.getTracks().forEach(t => t.stop());
+        currentStream = null;
+      }
+      const constraints = {
+        video: deviceId ? { deviceId: { exact: deviceId }, width:640, height:480 } : { width:640, height:480 },
+        audio: false
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      currentStream = stream;
+      video.srcObject = stream;
+      video.src = '';
+      video.crossOrigin = null;
+      await video.play();
+      corsBlocked = false;
+      showSource(false); // live source -> no transport controls
+      setClock('Kamera aktiv: ' + (cameraSelect.options[cameraSelect.selectedIndex]?.textContent || ''));
+      diag('Kamera aktiv.');
+      refreshCameraList(); // labels become available once permission is granted
+    }catch(e){
+      let hint = '';
+      if(e.name === 'NotAllowedError') hint = ' Möglich: Zugriff verweigert, oder eingebettete Vorschau leitet Kamera-Rechte nicht weiter — Datei dann lokal im Browser öffnen.';
+      diag('Start fehlgeschlagen: ' + e.name + hint);
+      setClock('Kamera-Zugriff verweigert');
+      alert('Kamera konnte nicht gestartet werden: ' + e.name + ' – ' + e.message + hint);
+    }
+  }
+
+  // ---------- Source loading ----------
+  btnWebcam.addEventListener('click', () => startWebcam(cameraSelect.value));
+
+  cameraSelect.addEventListener('change', () => {
+    // if a webcam stream is already active, switch it live to the newly selected camera
+    if(currentStream) startWebcam(cameraSelect.value);
+  });
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if(!file) return;
+    if(currentStream){ currentStream.getTracks().forEach(t=>t.stop()); currentStream = null; }
+    const url = URL.createObjectURL(file);
+    video.srcObject = null;
+    video.src = url;
+    video.loop = false;
+    video.play();
+    corsBlocked = false;
+    showSource(true); // seekable file -> show transport controls
+    setClock('Videodatei geladen: ' + file.name);
+  });
+
+  btnUrl.addEventListener('click', () => {
+    const url = urlInput.value.trim();
+    if(!url) return;
+    if(currentStream){ currentStream.getTracks().forEach(t=>t.stop()); currentStream = null; }
+    video.srcObject = null;
+    video.crossOrigin = 'anonymous';
+    video.src = url;
+    corsBlocked = false;
+    video.play().catch(()=>{});
+    showSource(true); // will auto-hide transport controls once metadata reveals it's a live stream
+    setClock('Stream-URL geladen (CORS wird beim Start geprüft)');
+  });
+
+  // ---------- Video transport controls (play/pause/seek) ----------
+  video.addEventListener('loadedmetadata', () => {
+    const isSeekable = video.srcObject === null && isFinite(video.duration) && video.duration > 0;
+    transportRow.style.display = isSeekable ? 'flex' : 'none';
+    updateTimeLabel();
+  });
+
+  function fmtTime(s){
+    if(!isFinite(s)) return '00:00';
+    const m = Math.floor(s/60), sec = Math.floor(s%60);
+    return String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+  }
+  function updateTimeLabel(){
+    timeLabel.textContent = fmtTime(video.currentTime) + ' / ' + fmtTime(video.duration);
+    if(isFinite(video.duration) && video.duration > 0){
+      seekSlider.value = Math.round((video.currentTime/video.duration)*1000);
+    }
+  }
+  video.addEventListener('timeupdate', updateTimeLabel);
+  video.addEventListener('play', () => btnPlayPause.textContent = '⏸ Pause');
+  video.addEventListener('pause', () => btnPlayPause.textContent = '▶ Play');
+
+  btnPlayPause.addEventListener('click', () => {
+    if(video.paused) video.play(); else video.pause();
+  });
+  btnRewind.addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 5); });
+  btnForward.addEventListener('click', () => { video.currentTime = Math.min(video.duration||0, video.currentTime + 5); });
+  seekSlider.addEventListener('input', () => {
+    if(isFinite(video.duration) && video.duration > 0){
+      video.currentTime = (seekSlider.value/1000) * video.duration;
+    }
+  });
+
+  // ---------- Start/Stop ----------
+  btnStart.addEventListener('click', () => {
+    resetState();
+    analyzing = true;
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+    setClock('Analyse läuft');
+    requestAnimationFrame(loop);
+  });
+
+  btnStop.addEventListener('click', () => {
+    analyzing = false;
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+    setClock('Analyse gestoppt');
+  });
+
+  btnResetHeatmap.addEventListener('click', () => {
+    densityGrid = new Float32Array(PW*PH);
+    flowDX = new Float32Array(PW*PH);
+    flowDY = new Float32Array(PW*PH);
+    flowN  = new Float32Array(PW*PH);
+    speedSum = new Float32Array(PW*PH);
+    speedN   = new Float32Array(PW*PH);
+    sumSpeedSamples = 0; cntSpeedSamples = 0; maxSpeedSession = 0; sumPxAlways = 0; cntPxAlways = 0; maxPxAlways = 0;
+    statAvgSpeed.textContent = '–'; statMaxSpeed.textContent = '–';
+  });
+
+  function resetState(){
+    bg = null;
+    frameCount = 0;
+    tracks = [];
+    nextId = 1;
+    allVehicles = [];
+    sumSpeedSamples = 0; cntSpeedSamples = 0; maxSpeedSession = 0; sumPxAlways = 0; cntPxAlways = 0; maxPxAlways = 0;
+    statActive.textContent = '0';
+    statTotal.textContent = '0';
+    statAvgSpeed.textContent = '–'; statMaxSpeed.textContent = '–';
+    cMoto.textContent = '0'; cCar.textContent = '0'; cTruck.textContent = '0'; cPerson.textContent = '0'; cNoise.textContent = '0'; noiseCount = 0;
+  }
+
+  // ---------- Calibration (perspective / homography) ----------
+  function displayToNative(px, py){
+    const rect = overlay.getBoundingClientRect();
+    const vw = video.videoWidth || rect.width, vh = video.videoHeight || rect.height;
+    return { x: px * (vw/rect.width), y: py * (vh/rect.height) };
+  }
+  function nativeToDisplay(nx, ny){
+    const rect = overlay.getBoundingClientRect();
+    const vw = video.videoWidth || rect.width, vh = video.videoHeight || rect.height;
+    return { x: nx * (rect.width/vw), y: ny * (rect.height/vh) };
+  }
+
+  // Solve 3x3 homography H mapping image points (x,y) -> world points (X,Y)
+  // via Direct Linear Transform on 4 point correspondences (8x8 linear system).
+  function solveHomography(imgPts, worldPts){
+    const A = []; const b = [];
+    for(let i=0;i<4;i++){
+      const {x,y} = imgPts[i]; const {x:X,y:Y} = worldPts[i];
+      A.push([x,y,1,0,0,0,-x*X,-y*X]); b.push(X);
+      A.push([0,0,0,x,y,1,-x*Y,-y*Y]); b.push(Y);
+    }
+    const h = gaussSolve(A, b); // [h11,h12,h13,h21,h22,h23,h31,h32]
+    if(!h) return null;
+    return [
+      [h[0],h[1],h[2]],
+      [h[3],h[4],h[5]],
+      [h[6],h[7],1]
+    ];
+  }
+
+  function gaussSolve(A, b){
+    const n = A.length;
+    const M = A.map((row,i)=> [...row, b[i]]);
+    for(let col=0; col<n; col++){
+      let piv = col;
+      for(let r=col+1;r<n;r++) if(Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+      if(Math.abs(M[piv][col]) < 1e-9) return null;
+      [M[col],M[piv]] = [M[piv],M[col]];
+      const pivVal = M[col][col];
+      for(let c=col;c<=n;c++) M[col][c] /= pivVal;
+      for(let r=0;r<n;r++){
+        if(r===col) continue;
+        const factor = M[r][col];
+        for(let c=col;c<=n;c++) M[r][c] -= factor*M[col][c];
+      }
+    }
+    return M.map(row => row[n]);
+  }
+
+  function invert3x3(m){
+    const [[a,b,c],[d,e,f],[g,h,i]] = m;
+    const A =  (e*i - f*h), B = -(d*i - f*g), C =  (d*h - e*g);
+    const D = -(b*i - c*h), E =  (a*i - c*g), F = -(a*h - b*g);
+    const G =  (b*f - c*e), H = -(a*f - c*d), I =  (a*e - b*d);
+    const det = a*A + b*B + c*C;
+    if(Math.abs(det) < 1e-12) return null;
+    const inv = [[A,D,G],[B,E,H],[C,F,I]];
+    for(let r=0;r<3;r++) for(let cIdx=0;cIdx<3;cIdx++) inv[r][cIdx] /= det;
+    return inv;
+  }
+
+  function applyH(H, x, y){
+    const X = H[0][0]*x + H[0][1]*y + H[0][2];
+    const Y = H[1][0]*x + H[1][1]*y + H[1][2];
+    const Wd = H[2][0]*x + H[2][1]*y + H[2][2];
+    return { x: X/Wd, y: Y/Wd };
+  }
+
+  // Shared: given 4 native-pixel points (TL,TR,BR,BL) + real width/length in meters,
+  // solve the homography and set it as the active calibration.
+  function applyCalibrationFromPoints(nativePts, width, length){
+    if(!(width>0) || !(length>0)) return false;
+    const worldPts = [{x:0,y:0},{x:width,y:0},{x:width,y:length},{x:0,y:length}];
+    const H = solveHomography(nativePts, worldPts);
+    const Hinv = H ? invert3x3(H) : null;
+    if(H && Hinv){
+      calibration = { H, Hinv, width, length, nativePoints: nativePts.slice() };
+      calibStatus.textContent = `perspektivisch kalibriert: ${width}m × ${length}m · Anzeige: px/s, m/s, km/h`;
+      btnResetCalib.disabled = false;
+      return true;
+    }
+    calibStatus.textContent = 'Kalibrierung fehlgeschlagen (Punkte zu nah beieinander/kollinear) · Anzeige: px/s';
+    return false;
+  }
+
+  btnCalibrate.addEventListener('click', () => {
+    calibrationMode = true;
+    calibClicks = [];
+    overlay.style.pointerEvents = 'auto';
+    calibStatus.textContent = 'Kalibrierung: Punkt 1/4 (im Uhrzeigersinn: oben-links, oben-rechts, unten-rechts, unten-links eines realen Rechtecks) …';
+  });
+
+  overlay.addEventListener('click', (ev) => {
+    if(!calibrationMode) return;
+    const rect = overlay.getBoundingClientRect();
+    const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
+    const native = displayToNative(px, py);
+    calibClicks.push(native);
+    if(calibClicks.length < 4){
+      calibStatus.textContent = `Kalibrierung: Punkt ${calibClicks.length+1}/4 …`;
+      return;
+    }
+    // 4 points collected — pixel positions/distances between them are already
+    // known exactly from the click coordinates, nothing to measure by hand.
+    const wIn = window.prompt('Reale Breite des Rechtecks in Metern (Strecke Punkt1→Punkt2):', widthPreset.value);
+    const width = parseFloat((wIn||'').replace(',','.'));
+    const lIn = window.prompt('Reale Länge/Tiefe des Rechtecks in Metern (Strecke Punkt2→Punkt3) — kann nicht automatisch ermittelt werden, bitte selbst messen:', '5');
+    const length = parseFloat((lIn||'').replace(',','.'));
+    calibrationMode = false;
+    overlay.style.pointerEvents = 'none';
+    const pts = calibClicks.slice();
+    calibClicks = [];
+    if(!applyCalibrationFromPoints(pts, width, length)){
+      calibStatus.textContent = 'Kalibrierung abgebrochen · Anzeige: px/s (relativ)';
+    }
+  });
+
+  btnResetCalib.addEventListener('click', () => {
+    calibration = null;
+    btnResetCalib.disabled = true;
+    calibStatus.textContent = 'unkalibriert · Anzeige: px/s (relativ)';
+  });
+
+  function formatSpeed(value){
+    if(!isFinite(value) || value===null || value===undefined) return '–';
+    return calibration ? value.toFixed(1) + ' km/h' : Math.round(value) + ' px/s';
+  }
+  // Full multi-unit speed string: px/s always; m/s and km/h only when calibrated.
+  function formatSpeedFull(pxPerSec, kmh){
+    const pxStr = isFinite(pxPerSec) ? Math.round(pxPerSec) + ' px/s' : '– px/s';
+    if(calibration && isFinite(kmh)){
+      const ms = kmh/3.6;
+      return `${pxStr} · ${ms.toFixed(1)} m/s · ${kmh.toFixed(1)} km/h`;
+    }
+    return `${pxStr} · – m/s · – km/h`;
+  }
+
+  function boxBlurR(src, w, h, r){
+    const tmp = new Float32Array(w*h);
+    const out = new Float32Array(w*h);
+    for(let y=0;y<h;y++){
+      let sum=0;
+      for(let x=-r;x<=r;x++){ const xx=Math.min(w-1,Math.max(0,x)); sum+=src[y*w+xx]; }
+      tmp[y*w+0]=sum/(2*r+1);
+      for(let x=1;x<w;x++){
+        const addX=Math.min(w-1,x+r), remX=Math.max(0,x-r-1);
+        sum += src[y*w+addX] - src[y*w+remX];
+        tmp[y*w+x]=sum/(2*r+1);
+      }
+    }
+    for(let x=0;x<w;x++){
+      let sum=0;
+      for(let y=-r;y<=r;y++){ const yy=Math.min(h-1,Math.max(0,y)); sum+=tmp[yy*w+x]; }
+      out[0*w+x]=sum/(2*r+1);
+      for(let y=1;y<h;y++){
+        const addY=Math.min(h-1,y+r), remY=Math.max(0,y-r-1);
+        sum += tmp[addY*w+x]-tmp[remY*w+x];
+        out[y*w+x]=sum/(2*r+1);
+      }
+    }
+    return out;
+  }
+
+  // ---------- Lane detection from a still frame (Sobel edges + Hough line transform) ----------
+  const btnAnalyzeLanes = document.getElementById('btnAnalyzeLanes');
+  const laneAnalysisWrap = document.getElementById('laneAnalysisWrap');
+  const laneCanvas = document.getElementById('laneCanvas');
+  const lctx = laneCanvas.getContext('2d');
+  const laneStatus = document.getElementById('laneStatus');
+  const btnApplyLaneSuggestion = document.getElementById('btnApplyLaneSuggestion');
+  const widthPreset = document.getElementById('widthPreset');
+  const horizonSlider = document.getElementById('horizonSlider');
+  const horizonVal = document.getElementById('horizonVal');
+  const markingModeToggle = document.getElementById('markingModeToggle');
+  let laneSuggestion = null; // { nativePoints: [4], width }
+
+  horizonSlider.addEventListener('input', ()=> horizonVal.textContent = horizonSlider.value + '%');
+
+  function sobelEdges(gray, w, h){
+    const mag = new Float32Array(w*h);
+    for(let y=1;y<h-1;y++){
+      for(let x=1;x<w-1;x++){
+        const i = y*w+x;
+        const gx = -gray[i-w-1] - 2*gray[i-1] - gray[i+w-1] + gray[i-w+1] + 2*gray[i+1] + gray[i+w+1];
+        const gy = -gray[i-w-1] - 2*gray[i-w] - gray[i-w+1] + gray[i+w-1] + 2*gray[i+w] + gray[i+w+1];
+        mag[i] = Math.sqrt(gx*gx + gy*gy);
+      }
+    }
+    return mag;
+  }
+
+  // classic Hough line transform: returns top line candidates as {theta, rho, votes}
+  function houghLines(edgePoints, w, h, maxLines){
+    const thetaSteps = 90; // 0..178 deg in 2-degree steps
+    const diag = Math.sqrt(w*w+h*h);
+    const rhoSteps = Math.round(diag*2);
+    const acc = new Int32Array(thetaSteps*rhoSteps);
+    const cosT = new Float32Array(thetaSteps), sinT = new Float32Array(thetaSteps);
+    for(let t=0;t<thetaSteps;t++){
+      const theta = t*Math.PI/thetaSteps;
+      cosT[t]=Math.cos(theta); sinT[t]=Math.sin(theta);
+    }
+    for(const [x,y] of edgePoints){
+      for(let t=0;t<thetaSteps;t++){
+        const rho = x*cosT[t] + y*sinT[t];
+        const rBin = Math.round(rho+diag);
+        if(rBin>=0 && rBin<rhoSteps) acc[t*rhoSteps+rBin]++;
+      }
+    }
+    // find peaks with simple non-max suppression
+    const candidates = [];
+    for(let t=0;t<thetaSteps;t++){
+      for(let r=0;r<rhoSteps;r++){
+        const v = acc[t*rhoSteps+r];
+        if(v > 12) candidates.push({t, r, v});
+      }
+    }
+    candidates.sort((a,b)=>b.v-a.v);
+    const picked = [];
+    for(const c of candidates){
+      if(picked.length >= maxLines) break;
+      const tooClose = picked.some(p => Math.abs(p.t-c.t) < 6 && Math.abs(p.r-c.r) < diag*0.05);
+      if(tooClose) continue;
+      picked.push(c);
+    }
+    return picked.map(c => ({
+      theta: c.t*Math.PI/thetaSteps,
+      rho: c.r - diag,
+      votes: c.v
+    }));
+  }
+
+  // x-position of a Hough line (theta,rho) at a given y (returns null if line is ~horizontal)
+  function lineXatY(line, y){
+    const cosT = Math.cos(line.theta), sinT = Math.sin(line.theta);
+    if(Math.abs(cosT) < 0.15) return null; // too horizontal to be a lane edge
+    return (line.rho - y*sinT) / cosT;
+  }
+
+  btnAnalyzeLanes.addEventListener('click', () => {
+    if(!hasSource || video.videoWidth===0){
+      alert('Bitte zuerst eine Videoquelle laden.');
+      return;
+    }
+    const LW = 320, LH = Math.round(320 * video.videoHeight/video.videoWidth);
+    laneCanvas.width = LW; laneCanvas.height = LH;
+    lctx.drawImage(video, 0, 0, LW, LH);
+    let imgData;
+    try{
+      imgData = lctx.getImageData(0,0,LW,LH);
+    }catch(e){
+      laneAnalysisWrap.style.display = 'block';
+      laneStatus.textContent = 'Analyse blockiert: Quelle ohne CORS-Freigabe (tainted canvas). Webcam oder lokale Datei verwenden.';
+      return;
+    }
+    laneAnalysisWrap.style.display = 'block';
+    const data = imgData.data;
+    const gray = new Float32Array(LW*LH);
+    for(let i=0,p=0;i<LW*LH;i++,p+=4) gray[i] = 0.299*data[p]+0.587*data[p+1]+0.114*data[p+2];
+
+    // horizon ROI: everything above this row is excluded from detection —
+    // this is a region restriction, not semantic building recognition, but it
+    // reliably keeps building facades/sky out of a forward-facing traffic-cam shot
+    const horizonY = Math.round(LH * (parseInt(horizonSlider.value,10)/100));
+
+    let candidatePoints = [];
+    if(markingModeToggle.checked){
+      // marking mode: look for paint-like local brightness contrast (lane paint
+      // is reliably BRIGHTER than the surrounding road surface), rather than any
+      // high-contrast edge — buildings have edges but not this "brighter than
+      // local surroundings" signature the same way road paint does.
+      const localAvg = boxBlurR(gray, LW, LH, 9);
+      for(let y=horizonY;y<LH;y++){
+        for(let x=0;x<LW;x++){
+          const i=y*LW+x;
+          const contrast = gray[i]-localAvg[i];
+          if(contrast > 22 && gray[i] > 110) candidatePoints.push([x,y]);
+        }
+      }
+    } else {
+      const mag = sobelEdges(gray, LW, LH);
+      let maxMag = 1;
+      for(let i=0;i<mag.length;i++) if(mag[i]>maxMag) maxMag = mag[i];
+      const edgeThresh = maxMag*0.35;
+      for(let y=horizonY;y<LH;y++){
+        for(let x=0;x<LW;x++){
+          if(mag[y*LW+x] > edgeThresh) candidatePoints.push([x,y]);
+        }
+      }
+    }
+
+    // draw the snapshot + horizon line + candidate-point overlay for transparency
+    lctx.putImageData(imgData,0,0);
+    lctx.strokeStyle = 'rgba(255,93,93,0.8)'; lctx.lineWidth = 1.5; lctx.setLineDash([6,4]);
+    lctx.beginPath(); lctx.moveTo(0,horizonY); lctx.lineTo(LW,horizonY); lctx.stroke();
+    lctx.setLineDash([]);
+    lctx.fillStyle = 'rgba(40,224,197,0.55)';
+    for(const [x,y] of candidatePoints) lctx.fillRect(x,y,1,1);
+
+    if(candidatePoints.length < 30){
+      laneStatus.textContent = `Zu wenige Kandidatenpunkte (${candidatePoints.length}) unterhalb der Horizont-Grenze gefunden. Horizont-Slider tiefer stellen, "nur Markierungen" ausschalten, oder ein anderes Standbild versuchen.`;
+      btnApplyLaneSuggestion.disabled = true;
+      laneSuggestion = null;
+      return;
+    }
+
+    const lines = houghLines(candidatePoints, LW, LH, 10);
+    if(lines.length < 2){
+      laneStatus.textContent = `Nur ${lines.length} markante Linie(n) unterhalb der Horizont-Grenze gefunden — für eine automatische Fahrbahnerkennung werden mindestens 2 benötigt. Manuelle Kalibrierung verwenden.`;
+      btnApplyLaneSuggestion.disabled = true;
+      laneSuggestion = null;
+      return;
+    }
+
+    // draw all detected candidate lines faintly
+    for(const line of lines){
+      const y0=horizonY, y1=LH;
+      const x0 = lineXatY(line,y0), x1 = lineXatY(line,y1);
+      if(x0===null||x1===null) continue;
+      lctx.strokeStyle = 'rgba(255,176,32,0.35)';
+      lctx.lineWidth = 1;
+      lctx.beginPath(); lctx.moveTo(x0,y0); lctx.lineTo(x1,y1); lctx.stroke();
+    }
+
+    // pick the pair of near-vertical lines that form a plausible converging road trapezoid:
+    // near (bottom) separation clearly larger than far (top) separation, ranked by Hough vote strength.
+    // "far" is pinned at-or-below the horizon line, never above it (that region was excluded).
+    const nearY = LH*0.94, farY = Math.max(horizonY+2, LH*0.55);
+    let best = null;
+    for(let i=0;i<lines.length;i++){
+      for(let j=i+1;j<lines.length;j++){
+        const a = lines[i], b = lines[j];
+        const aNear = lineXatY(a,nearY), bNear = lineXatY(b,nearY);
+        const aFar = lineXatY(a,farY), bFar = lineXatY(b,farY);
+        if([aNear,bNear,aFar,bFar].some(v=>v===null)) continue;
+        const left = aNear<bNear ? {near:aNear,far:aFar,l:a} : {near:bNear,far:bFar,l:b};
+        const right = aNear<bNear ? {near:bNear,far:bFar,l:b} : {near:aNear,far:aFar,l:a};
+        const nearSep = right.near-left.near, farSep = right.far-left.far;
+        if(nearSep < 15 || farSep < 5) continue;              // implausibly narrow
+        if(nearSep <= farSep*1.05) continue;                   // must converge upward like a real road
+        if(left.near<-LW*0.3 || right.near>LW*1.3) continue;   // out of frame sanity
+        const score = (a.votes+b.votes) - Math.abs(nearSep-farSep)*0.01;
+        if(!best || score>best.score){
+          best = { left, right, nearSep, farSep, score };
+        }
+      }
+    }
+
+    if(!best){
+      laneStatus.textContent = `${lines.length} Linien erkannt, aber keine plausible konvergierende Fahrbahn-Paarung gefunden. Bitte manuell kalibrieren, Horizont-Grenze anpassen, oder anderes Standbild versuchen.`;
+      btnApplyLaneSuggestion.disabled = true;
+      laneSuggestion = null;
+      return;
+    }
+
+    const farL = {x:best.left.far, y:farY}, farR = {x:best.right.far, y:farY};
+    const nearR = {x:best.right.near, y:nearY}, nearL = {x:best.left.near, y:nearY};
+    const quad = [farL, farR, nearR, nearL]; // TL,TR,BR,BL in analysis-canvas space
+
+    // highlight chosen pair + suggested quad
+    lctx.strokeStyle = '#28e0c5'; lctx.lineWidth = 2;
+    lctx.beginPath();
+    quad.forEach((p,idx)=> idx===0?lctx.moveTo(p.x,p.y):lctx.lineTo(p.x,p.y));
+    lctx.closePath(); lctx.stroke();
+    quad.forEach(p=>{ lctx.fillStyle='#28e0c5'; lctx.beginPath(); lctx.arc(p.x,p.y,4,0,Math.PI*2); lctx.fill(); });
+
+    // convert suggested points from analysis-canvas space to native video pixel space
+    const scaleX = video.videoWidth/LW, scaleY = video.videoHeight/LH;
+    const nativePts = quad.map(p => ({x:p.x*scaleX, y:p.y*scaleY}));
+    laneSuggestion = { nativePoints: nativePts };
+    btnApplyLaneSuggestion.disabled = false;
+    laneStatus.textContent = `Vorschlag gefunden: ${candidatePoints.length} Kandidatenpunkte (${markingModeToggle.checked?'Markierungs-Modus':'Kanten-Modus'}), ${lines.length} Linien unterhalb der Horizont-Grenze, gewähltes Paar mit ${best.left.l.votes + best.right.l.votes} Stimmen. Bitte prüfen, ob das Viereck wirklich der Fahrbahn folgt, dann übernehmen.`;
+  });
+
+  btnApplyLaneSuggestion.addEventListener('click', () => {
+    if(!laneSuggestion) return;
+    const defaultWidth = widthPreset.value;
+    const wIn = window.prompt('Reale Fahrbahnbreite in Metern (Vorschlag aus Dropdown, bitte prüfen/anpassen):', defaultWidth);
+    const width = parseFloat((wIn||'').replace(',','.'));
+    const lIn = window.prompt('Reale Länge/Tiefe in Metern zwischen den beiden gewählten Bildzeilen — kann nicht automatisch aus einem Bild ermittelt werden, bitte selbst schätzen/messen:', '10');
+    const length = parseFloat((lIn||'').replace(',','.'));
+    applyCalibrationFromPoints(laneSuggestion.nativePoints, width, length);
+  });
+
+  // ---------- View toggle ----------
+  function setView(v){
+    currentView = v;
+    [viewLive, viewDensity, viewFlow, viewSpeed].forEach(b=>b.classList.remove('active'));
+    if(v==='live') viewLive.classList.add('active');
+    if(v==='density') viewDensity.classList.add('active');
+    if(v==='flow') viewFlow.classList.add('active');
+    if(v==='speed') viewSpeed.classList.add('active');
+  }
+  viewLive.addEventListener('click', ()=>setView('live'));
+  viewDensity.addEventListener('click', ()=>setView('density'));
+  viewFlow.addEventListener('click', ()=>setView('flow'));
+  viewSpeed.addEventListener('click', ()=>setView('speed'));
+
+  sensSlider.addEventListener('input', ()=> sensVal.textContent = sensSlider.value);
+  minAreaSlider.addEventListener('input', ()=> minAreaVal.textContent = minAreaSlider.value);
+
+  // ---------- Export ----------
+  btnExport.addEventListener('click', () => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      processingResolution: { width: PW, height: PH },
+      calibration: calibration ? {
+        method: "4-point homography (perspective-correct)",
+        referenceRectangleMeters: { width: calibration.width, length: calibration.length },
+        assumption: "Die 4 Kalibrierpunkte liegen auf einer ebenen Flaeche (z. B. Strasse ohne Steigung)."
+      } : null,
+      note: "Positionen sind Zellkoordinaten im Analyseraster (0..width/height). class ist eine Groessen-Heuristik, kein ML-Klassifikationsergebnis. speedPxS ist die relative Geschwindigkeit in nativen Video-Pixeln/Sekunde (immer vorhanden). speedKmh ist die perspektivisch korrigierte reale Geschwindigkeit ueber die Homographie, nur vorhanden wenn zum Exportzeitpunkt kalibriert war.",
+      vehicles: allVehicles.map(v => {
+        const kmhSamples = v.history.map(p=>p.speedKmh).filter(s => s!=null);
+        return {
+          id: v.id,
+          class: v.cls,
+          firstSeen: v.firstSeen,
+          lastSeen: v.lastSeen,
+          avgSpeedPxS: v.history.length ? Math.round(v.history.reduce((s,p)=>s+(p.speedPxS||0),0)/v.history.length) : 0,
+          maxSpeedPxS: Math.round(v.maxSpeedPxS||0),
+          avgSpeedKmh: (calibration && kmhSamples.length) ? +(kmhSamples.reduce((s,x)=>s+x,0)/kmhSamples.length).toFixed(1) : undefined,
+          maxSpeedKmh: calibration ? +((v.maxSpeedKmh||0).toFixed(1)) : undefined,
+          path: v.history
+        };
+      })
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'verkehrsanalyse_export_' + Date.now() + '.json';
+    a.click();
+  });
+
+  // ---------- Core loop ----------
+  // blob = {cx, cy, w, h, area} in processing-grid coordinates (PW x PH)
+  function classify(blob){
+    const {area, w, h, cx, cy} = blob;
+    const minA = parseInt(minAreaSlider.value,10);
+    const tall = h > w * 1.5; // upright, taller-than-wide silhouette
+
+    if(calibration){
+      // real-world width of the object's BASE (bottom edge of its bounding box),
+      // via the perspective-correct homography — only the ground-contact edge
+      // is valid to project this way; the top of a tall object is not on the
+      // ground plane, so we deliberately don't use the full box for this.
+      const vw = video.videoWidth||PW, vh = video.videoHeight||PH;
+      const scaleX = vw/PW, scaleY = vh/PH;
+      const yBase = cy + h/2;
+      const xL = cx - w/2, xR = cx + w/2;
+      const pL = applyH(calibration.H, xL*scaleX, yBase*scaleY);
+      const pR = applyH(calibration.H, xR*scaleX, yBase*scaleY);
+      const widthM = Math.hypot(pR.x-pL.x, pR.y-pL.y);
+
+      if(tall && widthM < 1.0) return 'Person';
+      if(widthM < 1.1) return 'Motorrad/Fahrrad';
+      if(widthM < 2.2) return 'PKW';
+      return 'LKW/Bus';
+    }
+
+    // fallback without calibration: relative pixel-area heuristic (unreliable — no real scale reference)
+    if(tall && area < minA*10) return 'Person';
+    if(area < minA*2.2) return 'Motorrad/Fahrrad';
+    if(area < minA*9) return 'PKW';
+    return 'LKW/Bus';
+  }
+  const classColor = { 'Motorrad/Fahrrad':'#c084fc', 'PKW':'#28e0c5', 'LKW/Bus':'#ffb020', 'Person':'#4ade80', 'Störung':'#5a6570' };
+
+  // Heuristic check for near-camera glass artifacts (raindrops/dirt on the pane):
+  // small, roughly circular blobs whose motion direction doesn't match the road's
+  // expected direction of travel (when a perspective calibration/lane is known).
+  function looksLikeGlassArtifact(t){
+    const aspect = t.w>=t.h ? t.w/t.h : t.h/t.w;
+    const minA = parseInt(minAreaSlider.value,10);
+    const smallAndRound = aspect < 1.5 && t.area < minA*3;
+    if(!smallAndRound) return false;
+    if(!calibration || t.history.length < 4) return false; // no road-direction reference available
+    const p0 = t.history[0], p1 = t.history[t.history.length-1];
+    const dx = p1.x-p0.x, dy = p1.y-p0.y;
+    const moveMag = Math.hypot(dx,dy);
+    if(moveMag < 2) return false; // too little motion to judge direction
+    const trackAngle = Math.atan2(dy,dx);
+    // expected road direction: vector from near-mid to far-mid of the calibration quad (image space)
+    const [tl,tr,br,bl] = calibration.nativePoints;
+    const nearMid = {x:(bl.x+br.x)/2, y:(bl.y+br.y)/2};
+    const farMid  = {x:(tl.x+tr.x)/2, y:(tl.y+tr.y)/2};
+    const roadAngle = Math.atan2(farMid.y-nearMid.y, farMid.x-nearMid.x);
+    let diff = Math.abs(trackAngle - roadAngle) % (2*Math.PI);
+    if(diff > Math.PI) diff = 2*Math.PI - diff;
+    const diffFromEither = Math.min(diff, Math.abs(diff - Math.PI)); // allow travel in both directions along the road
+    return diffFromEither > (55*Math.PI/180); // more than ~55° off the road axis
+  }
+
+  // ---------- Detection quality helpers ----------
+  function boxBlur3(src, w, h){
+    const out = new Float32Array(w*h);
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        let sum=0, cnt=0;
+        for(let dy=-1;dy<=1;dy++){
+          for(let dx=-1;dx<=1;dx++){
+            const nx=x+dx, ny=y+dy;
+            if(nx>=0&&nx<w&&ny>=0&&ny<h){ sum += src[ny*w+nx]; cnt++; }
+          }
+        }
+        out[y*w+x] = sum/cnt;
+      }
+    }
+    return out;
+  }
+  function erode(mask, w, h){
+    const out = new Uint8Array(w*h);
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        let allOn = true;
+        for(let dy=-1;dy<=1 && allOn;dy++){
+          for(let dx=-1;dx<=1;dx++){
+            const nx=x+dx, ny=y+dy;
+            if(nx<0||nx>=w||ny<0||ny>=h||!mask[ny*w+nx]){ allOn=false; break; }
+          }
+        }
+        out[y*w+x] = allOn ? 1 : 0;
+      }
+    }
+    return out;
+  }
+  function dilate(mask, w, h){
+    const out = new Uint8Array(w*h);
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        let anyOn = false;
+        for(let dy=-1;dy<=1 && !anyOn;dy++){
+          for(let dx=-1;dx<=1;dx++){
+            const nx=x+dx, ny=y+dy;
+            if(nx>=0&&nx<w&&ny>=0&&ny<h&&mask[ny*w+nx]){ anyOn=true; break; }
+          }
+        }
+        out[y*w+x] = anyOn ? 1 : 0;
+      }
+    }
+    return out;
+  }
+  const CONFIRM_FRAMES = 3; // frames a candidate blob must persist before it counts as a vehicle
+
+  function loop(){
+    if(!analyzing) return;
+    if(video.readyState >= 2 && video.videoWidth > 0){
+      step();
+    }
+    requestAnimationFrame(loop);
+  }
+
+  function step(){
+    const nowPerf = performance.now();
+    if(lastFrameTime !== null){
+      const instFps = 1000/(nowPerf-lastFrameTime);
+      measuredFps = measuredFps ? measuredFps*0.8 + instFps*0.2 : instFps;
+    }
+    lastFrameTime = nowPerf;
+
+    pctx.drawImage(video, 0, 0, PW, PH);
+    let frame;
+    try{
+      frame = pctx.getImageData(0,0,PW,PH).data;
+    }catch(e){
+      if(!corsBlocked){
+        corsBlocked = true;
+        setClock('Analyse blockiert (CORS) – Quelle ohne Freigabe');
+        alert('Diese Video-/Stream-Quelle erlaubt keine Pixel-Analyse (fehlende CORS-Freigabe). Bitte Webcam oder lokale Videodatei verwenden.');
+        analyzing = false;
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+      }
+      return;
+    }
+
+    const n = PW*PH;
+    const grayRaw = new Float32Array(n);
+    for(let i=0, p=0; i<n; i++, p+=4){
+      grayRaw[i] = 0.299*frame[p] + 0.587*frame[p+1] + 0.114*frame[p+2];
+    }
+    // light 3x3 blur suppresses sensor/compression noise before differencing —
+    // reduces speckle false-positives without softening real vehicle-sized motion
+    const gray = boxBlur3(grayRaw, PW, PH);
+
+    if(!bg){
+      bg = gray.slice();
+      frameCount = 1;
+      renderOverlay([], frame);
+      diagLine.textContent = `Frame #1 · Hintergrund initialisiert · ${new Date().toLocaleTimeString('de-DE')}`;
+      return;
+    }
+
+    const thresh = parseInt(sensSlider.value,10);
+
+    // protect the area under currently confirmed vehicles from background adaptation —
+    // otherwise a vehicle that slows down or stops gets absorbed into the background
+    // within a few seconds and is re-registered as a "new" vehicle once it moves again
+    const protect = new Uint8Array(n);
+    for(const t of tracks){
+      if(!t.confirmed) continue;
+      const half = Math.max(4, Math.sqrt(t.area||16)) * 0.75;
+      const x0 = Math.max(0, Math.round(t.x-half)), x1 = Math.min(PW-1, Math.round(t.x+half));
+      const y0 = Math.max(0, Math.round(t.y-half)), y1 = Math.min(PH-1, Math.round(t.y+half));
+      for(let yy=y0; yy<=y1; yy++){
+        for(let xx=x0; xx<=x1; xx++) protect[yy*PW+xx] = 1;
+      }
+    }
+
+    let mask = new Uint8Array(n);
+    for(let i=0;i<n;i++){
+      const d = Math.abs(gray[i]-bg[i]);
+      mask[i] = d > thresh ? 1 : 0;
+      // slow-adapt background (helps with lighting drift); skip pixels currently
+      // flagged as motion AND pixels under a known confirmed vehicle
+      if(!mask[i] && !protect[i]) bg[i] = bg[i]*0.95 + gray[i]*0.05;
+    }
+
+    // morphological opening (erode->dilate) removes small noise specks,
+    // then closing (dilate->erode) bridges gaps so one vehicle isn't split into
+    // several fragments (a common issue with plain frame-differencing)
+    mask = dilate(erode(mask, PW, PH), PW, PH);
+    mask = erode(dilate(mask, PW, PH), PW, PH);
+
+    // draw the real motion mask from THIS frame into the debug canvas —
+    // this only changes when actual new video pixels differ from the background,
+    // so it is direct visual proof that live pixel data is being analyzed.
+    const maskImg = dctx.createImageData(PW, PH);
+    for(let i=0;i<n;i++){
+      const v = mask[i] ? 255 : 0;
+      maskImg.data[i*4] = v; maskImg.data[i*4+1] = v; maskImg.data[i*4+2] = v; maskImg.data[i*4+3] = 255;
+    }
+    dctx.putImageData(maskImg, 0, 0);
+    let motionPixels = 0;
+    for(let i=0;i<n;i++) motionPixels += mask[i];
+
+    // connected components (BFS) with cap for performance
+    const visited = new Uint8Array(n);
+    const blobs = [];
+    const qx = new Int16Array(n), qy = new Int16Array(n);
+    for(let y=0;y<PH;y++){
+      for(let x=0;x<PW;x++){
+        const idx = y*PW+x;
+        if(mask[idx] && !visited[idx]){
+          let qs=0, qe=0;
+          qx[qe]=x; qy[qe]=y; qe++;
+          visited[idx]=1;
+          let minX=x,maxX=x,minY=y,maxY=y,count=0;
+          while(qs<qe){
+            const cx=qx[qs], cy=qy[qs]; qs++;
+            count++;
+            if(cx<minX)minX=cx; if(cx>maxX)maxX=cx;
+            if(cy<minY)minY=cy; if(cy>maxY)maxY=cy;
+            const neigh = [[cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1]];
+            for(const [nx,ny] of neigh){
+              if(nx>=0&&nx<PW&&ny>=0&&ny<PH){
+                const nidx = ny*PW+nx;
+                if(mask[nidx] && !visited[nidx]){
+                  visited[nidx]=1;
+                  qx[qe]=nx; qy[qe]=ny; qe++;
+                }
+              }
+            }
+          }
+          const area = count;
+          const bw = maxX-minX+1, bh = maxY-minY+1;
+          const minAreaThresh = parseInt(minAreaSlider.value,10);
+          const elongation = Math.max(bw/bh, bh/bw);
+          // reject very small noise and implausibly thin/elongated shapes (e.g. swaying branches, wires)
+          if(area >= minAreaThresh && area < n*0.35 && elongation < 5.5){
+            blobs.push({ cx:(minX+maxX)/2, cy:(minY+maxY)/2, w:bw, h:bh, area });
+          }
+        }
+      }
+    }
+
+    updateTracks(blobs);
+    renderOverlay(blobs, frame);
+    frameCount++;
+    diagLine.textContent = `Frame #${frameCount} · verarbeitet ${new Date().toLocaleTimeString('de-DE')} · ~${measuredFps.toFixed(1)} fps analysiert · ${motionPixels} bewegte Pixel · ${blobs.length} Objekte im Frame`;
+  }
+
+  function updateTracks(blobs){
+    const baseMaxDist = 22;
+    const unmatched = new Set(blobs.map((_,i)=>i));
+    const now = Date.now();
+
+    for(const t of tracks){
+      // predict where this track should be THIS frame based on its last velocity,
+      // instead of matching against its last static position — a moving object
+      // otherwise easily outruns a fixed search radius and gets a new ID.
+      // Extrapolate further the longer it's already been missed.
+      const steps = (t.missed||0) + 1;
+      const predX = t.x + (t.dx||0)*steps, predY = t.y + (t.dy||0)*steps;
+      const speedMag = Math.hypot(t.dx||0, t.dy||0);
+      const maxDist = baseMaxDist + speedMag*1.5*steps; // extra slack for acceleration/turning
+
+      let bestI = -1, bestD = maxDist;
+      for(const i of unmatched){
+        const b = blobs[i];
+        const d = Math.hypot(b.cx-predX, b.cy-predY);
+        if(d < bestD){ bestD = d; bestI = i; }
+      }
+      if(bestI >= 0){
+        const b = blobs[bestI];
+        const prevHist = t.history[t.history.length-1];
+        t.dx = b.cx - t.x; t.dy = b.cy - t.y;
+        t.x = b.cx; t.y = b.cy;
+        t.area = b.area;
+        t.w = b.w; t.h = b.h;
+        t.cls = classify(b);
+
+        // smoothed values used ONLY for rendering — keeps the box/label calm and
+        // readable even though the underlying tracked position can be noisy
+        // frame-to-frame; speed/physics above still use the exact t.x/t.y.
+        const smoothF = 0.3;
+        t.dispX = (t.dispX===undefined) ? t.x : t.dispX + (t.x-t.dispX)*smoothF;
+        t.dispY = (t.dispY===undefined) ? t.y : t.dispY + (t.y-t.dispY)*smoothF;
+        t.dispW = (t.dispW===undefined) ? t.w : t.dispW + (t.w-t.dispW)*smoothF;
+        t.dispH = (t.dispH===undefined) ? t.h : t.dispH + (t.h-t.dispH)*smoothF;
+
+        // speed: convert grid-cell displacement to native video pixels / second
+        const vw = video.videoWidth || PW, vh = video.videoHeight || PH;
+        const scaleX = vw/PW, scaleY = vh/PH;
+        const dtSec = prevHist ? Math.max(0.001, (now - prevHist.t)/1000) : null;
+        let instSpeed = 0;      // px/s (relative, always available)
+        let instSpeedKmh = null; // real km/h, only if calibrated
+        if(dtSec){
+          const distNative = Math.hypot(t.dx*scaleX, t.dy*scaleY);
+          instSpeed = distNative / dtSec;
+          if(calibration){
+            const curNativeX = t.x*scaleX, curNativeY = t.y*scaleY;
+            const prevNativeX = (t.x - t.dx)*scaleX, prevNativeY = (t.y - t.dy)*scaleY;
+            const wCur = applyH(calibration.H, curNativeX, curNativeY);
+            const wPrev = applyH(calibration.H, prevNativeX, prevNativeY);
+            const worldDistM = Math.hypot(wCur.x-wPrev.x, wCur.y-wPrev.y);
+            instSpeedKmh = (worldDistM/dtSec) * 3.6;
+          }
+        }
+        t.speedPxS = (t.speedPxS===undefined) ? instSpeed : t.speedPxS*0.7 + instSpeed*0.3;
+        t.maxSpeedPxS = Math.max(t.maxSpeedPxS||0, t.speedPxS);
+        if(instSpeedKmh !== null){
+          t.speedKmh = (t.speedKmh===undefined) ? instSpeedKmh : t.speedKmh*0.7 + instSpeedKmh*0.3;
+          t.maxSpeedKmh = Math.max(t.maxSpeedKmh||0, t.speedKmh);
+        }
+
+        t.history.push({x:+b.cx.toFixed(1), y:+b.cy.toFixed(1), t: now, speedPxS: Math.round(t.speedPxS), speedKmh: instSpeedKmh!==null ? +t.speedKmh.toFixed(1) : null});
+        if(t.history.length > 300) t.history.shift();
+        t.missed = 0;
+        unmatched.delete(bestI);
+
+        // re-evaluate the glass-artifact heuristic once enough history exists;
+        // relabel as "Störung" and keep it out of vehicle counts if it matches
+        if(looksLikeGlassArtifact(t)){
+          if(!t.isArtifact) noiseCount++;
+          t.cls = 'Störung';
+          t.isArtifact = true;
+        } else {
+          t.isArtifact = false;
+        }
+
+        // require a blob to persist across several consecutive frames before it
+        // counts as a confirmed vehicle — filters out one-off noise/flicker blobs
+        // (and artifacts flagged above never get confirmed as a vehicle)
+        t.streak = (t.streak||1) + 1;
+        if(!t.confirmed && !t.isArtifact && t.streak >= CONFIRM_FRAMES){
+          t.confirmed = true;
+          allVehicles.push(t);
+        }
+
+        if(t.confirmed){
+          // accumulate heatmap
+          const gx = Math.min(PW-1, Math.max(0, Math.round(t.x)));
+          const gy = Math.min(PH-1, Math.max(0, Math.round(t.y)));
+          const gi = gy*PW+gx;
+          densityGrid[gi] += 1;
+          if(Math.hypot(t.dx,t.dy) > 0.4){
+            flowDX[gi] += t.dx; flowDY[gi] += t.dy; flowN[gi] += 1;
+          }
+          if(dtSec && t.speedPxS > 0.2){
+            sumPxAlways += t.speedPxS; cntPxAlways += 1;
+            if(t.speedPxS > maxPxAlways) maxPxAlways = t.speedPxS;
+          }
+          const speedMetric = calibration ? t.speedKmh : t.speedPxS;
+          if(dtSec && speedMetric > 0.2){
+            speedSum[gi] += speedMetric; speedN[gi] += 1;
+            sumSpeedSamples += speedMetric; cntSpeedSamples += 1;
+            if(speedMetric > maxSpeedSession) maxSpeedSession = speedMetric;
+          }
+        }
+      } else {
+        t.missed = (t.missed||0)+1;
+      }
+    }
+    tracks = tracks.filter(t => t.missed < (t.confirmed ? 25 : 6));
+
+    for(const i of unmatched){
+      const b = blobs[i];
+      // don't spawn a new track if this blob sits right next to an existing one —
+      // this is almost always the SAME physical vehicle whose mask briefly split
+      // into two blobs (shadow edge, windshield glare, etc.), not a second vehicle
+      const nearExisting = tracks.some(t => Math.hypot(b.cx-t.x, b.cy-t.y) < Math.max(14, Math.sqrt(t.area||16)*0.9));
+      if(nearExisting) continue;
+      const nt = {
+        id: 'V-' + String(nextId++).padStart(4,'0'),
+        x:b.cx, y:b.cy, dx:0, dy:0, area:b.area, w:b.w, h:b.h,
+        dispX:b.cx, dispY:b.cy, dispW:b.w, dispH:b.h,
+        cls: classify(b), missed:0, streak:1, confirmed:false,
+        history:[{x:+b.cx.toFixed(1), y:+b.cy.toFixed(1), t: Date.now(), speedPxS:0, speedKmh:null}],
+        firstSeen: new Date().toISOString(), lastSeen: null
+      };
+      tracks.push(nt);
+      // not added to allVehicles yet — only once it survives CONFIRM_FRAMES matches
+    }
+
+    // merge tracks that have drifted onto essentially the same object over consecutive
+    // frames (a further guard against double-counting one vehicle as two IDs)
+    for(let i=0;i<tracks.length;i++){
+      for(let j=tracks.length-1;j>i;j--){
+        const a = tracks[i], b2 = tracks[j];
+        const dist = Math.hypot(a.x-b2.x, a.y-b2.y);
+        const closeThresh = Math.max(10, Math.sqrt(Math.min(a.area||16,b2.area||16))*0.7);
+        if(dist >= closeThresh) continue;
+        let survivor, loser;
+        if(a.confirmed !== b2.confirmed){
+          survivor = a.confirmed ? a : b2;
+          loser = a.confirmed ? b2 : a;
+        } else {
+          survivor = a.firstSeen <= b2.firstSeen ? a : b2;
+          loser = survivor === a ? b2 : a;
+        }
+        if(loser.confirmed){
+          // both were already confirmed & counted separately — very likely the
+          // same vehicle, so remove the younger one from the vehicle count too
+          const idx = allVehicles.indexOf(loser);
+          if(idx>=0) allVehicles.splice(idx,1);
+        }
+        tracks.splice(tracks.indexOf(loser),1);
+      }
+    }
+
+    for(const t of tracks) t.lastSeen = new Date().toISOString();
+
+    // stats
+    statActive.textContent = tracks.filter(t=>t.confirmed).length;
+    statTotal.textContent = allVehicles.length;
+    let m=0,c=0,tr=0,pe=0;
+    for(const v of allVehicles){
+      if(v.cls==='Motorrad/Fahrrad') m++;
+      else if(v.cls==='PKW') c++;
+      else if(v.cls==='Person') pe++;
+      else tr++;
+    }
+    cMoto.textContent = m; cCar.textContent = c; cTruck.textContent = tr; cPerson.textContent = pe;
+    cNoise.textContent = noiseCount;
+
+    statAvgSpeed.textContent = cntPxAlways > 0 ? formatSpeedFull(sumPxAlways/cntPxAlways, calibration && cntSpeedSamples>0 ? sumSpeedSamples/cntSpeedSamples : NaN) : '–';
+    statMaxSpeed.textContent = maxPxAlways > 0 ? formatSpeedFull(maxPxAlways, calibration ? maxSpeedSession : NaN) : '–';
+  }
+
+  function heatColor(v){
+    // v in 0..1 -> blue -> teal -> yellow -> red
+    const stops = [
+      [11,61,145], [31,158,143], [40,224,197], [255,224,102], [255,138,61], [255,77,77]
+    ];
+    const scaled = v*(stops.length-1);
+    const i = Math.min(stops.length-2, Math.floor(scaled));
+    const f = scaled - i;
+    const c0 = stops[i], c1 = stops[i+1];
+    const r = Math.round(c0[0]+(c1[0]-c0[0])*f);
+    const g = Math.round(c0[1]+(c1[1]-c0[1])*f);
+    const b = Math.round(c0[2]+(c1[2]-c0[2])*f);
+    return [r,g,b];
+  }
+
+  function renderOverlay(blobs){
+    const W = overlay.width, H = overlay.height;
+    if(W===0||H===0) return;
+    octx.clearRect(0,0,W,H);
+    const sx = W/PW, sy = H/PH;
+
+    if(currentView==='live'){
+      for(const t of tracks){
+        if(!t.confirmed) continue;
+        const col = classColor[t.cls] || '#28e0c5';
+        const bw = Math.max(8, t.dispW ?? t.w ?? 10) * sx;
+        const bh = Math.max(8, t.dispH ?? t.h ?? 10) * sy;
+        const x = ((t.dispX ?? t.x) * sx) - bw/2;
+        const y = ((t.dispY ?? t.y) * sy) - bh/2;
+
+        // calm, rounded bounding box — thinner line, no per-frame size jitter
+        octx.strokeStyle = col;
+        octx.lineWidth = 1.5;
+        const r = Math.min(6, bw/2, bh/2);
+        octx.beginPath();
+        octx.roundRect ? octx.roundRect(x,y,bw,bh,r) : octx.rect(x,y,bw,bh);
+        octx.stroke();
+
+        // single compact label on a readable background, clamped to stay on-canvas
+        const label = `${t.id} · ${t.cls} · ${formatSpeedFull(t.speedPxS||0, calibration ? (t.speedKmh||NaN) : NaN)}`;
+        octx.font = '11px monospace';
+        const textW = octx.measureText(label).width;
+        const labelX = Math.max(2, Math.min(W-textW-8, x));
+        const labelY = Math.max(14, y-6);
+        octx.fillStyle = 'rgba(10,13,16,0.72)';
+        octx.fillRect(labelX-3, labelY-12, textW+6, 15);
+        octx.fillStyle = col;
+        octx.fillText(label, labelX, labelY);
+
+        // subtle trail from smoothed positions only, short and low-opacity
+        const hist = t.history.slice(-12);
+        if(hist.length>1){
+          octx.beginPath();
+          octx.strokeStyle = col + '66';
+          octx.lineWidth = 1;
+          hist.forEach((p,idx)=>{
+            const px = p.x*sx, py = p.y*sy;
+            if(idx===0) octx.moveTo(px,py); else octx.lineTo(px,py);
+          });
+          octx.stroke();
+        }
+      }
+    }
+
+    if(currentView==='density'){
+      let max = 1;
+      for(let i=0;i<densityGrid.length;i++) if(densityGrid[i]>max) max = densityGrid[i];
+      const cellW = sx, cellH = sy;
+      for(let y=0;y<PH;y++){
+        for(let x=0;x<PW;x++){
+          const v = densityGrid[y*PW+x];
+          if(v <= 0) continue;
+          const norm = Math.min(1, v/max);
+          const [r,g,b] = heatColor(norm);
+          octx.fillStyle = `rgba(${r},${g},${b},${0.15+norm*0.65})`;
+          octx.fillRect(x*cellW, y*cellH, cellW+1, cellH+1);
+        }
+      }
+    }
+
+    if(currentView==='speed'){
+      let max = 0.001;
+      for(let i=0;i<speedSum.length;i++){
+        if(speedN[i]>0){ const avg = speedSum[i]/speedN[i]; if(avg>max) max=avg; }
+      }
+      for(let y=0;y<PH;y++){
+        for(let x=0;x<PW;x++){
+          const idx = y*PW+x;
+          if(speedN[idx] <= 0) continue;
+          const avg = speedSum[idx]/speedN[idx];
+          const norm = Math.min(1, avg/max);
+          const [r,g,b] = heatColor(norm);
+          octx.fillStyle = `rgba(${r},${g},${b},${0.15+norm*0.65})`;
+          octx.fillRect(x*sx, y*sy, sx+1, sy+1);
+        }
+      }
+      octx.fillStyle = '#dbe4e9';
+      octx.font = '11px monospace';
+      octx.fillText('Skala: 0 – ' + formatSpeed(max), 6, H-8);
+    }
+
+    // persistent calibration marker: quad + projected 1m ground grid (visual proof of perspective correction)
+    if(currentView==='live' && calibration){
+      const pts = calibration.nativePoints.map(p => nativeToDisplay(p.x, p.y));
+      octx.save();
+      octx.setLineDash([5,4]);
+      octx.strokeStyle = '#ffb020';
+      octx.lineWidth = 1.5;
+      octx.beginPath();
+      pts.forEach((p,idx)=> idx===0 ? octx.moveTo(p.x,p.y) : octx.lineTo(p.x,p.y));
+      octx.closePath();
+      octx.stroke();
+      octx.restore();
+      octx.fillStyle = '#ffb020';
+      octx.font = '10.5px monospace';
+      octx.fillText(`${calibration.width}m × ${calibration.length}m`, pts[0].x, pts[0].y - 6);
+
+      // project a 1-meter ground grid through the inverse homography onto the image,
+      // so perspective lines visibly converge if the calibration is correct
+      octx.strokeStyle = 'rgba(255,176,32,0.35)';
+      octx.lineWidth = 1;
+      const stepM = Math.max(1, Math.round(Math.min(calibration.width, calibration.length)/6));
+      for(let gx0=0; gx0<=calibration.width+0.001; gx0+=stepM){
+        const a = applyH(calibration.Hinv, gx0, 0);
+        const c = applyH(calibration.Hinv, gx0, calibration.length);
+        const da = nativeToDisplay(a.x,a.y), dc = nativeToDisplay(c.x,c.y);
+        octx.beginPath(); octx.moveTo(da.x,da.y); octx.lineTo(dc.x,dc.y); octx.stroke();
+      }
+      for(let gy0=0; gy0<=calibration.length+0.001; gy0+=stepM){
+        const a = applyH(calibration.Hinv, 0, gy0);
+        const c = applyH(calibration.Hinv, calibration.width, gy0);
+        const da = nativeToDisplay(a.x,a.y), dc = nativeToDisplay(c.x,c.y);
+        octx.beginPath(); octx.moveTo(da.x,da.y); octx.lineTo(dc.x,dc.y); octx.stroke();
+      }
+    }
+
+    if(currentView==='flow'){
+      const step = 4;
+      for(let y=0;y<PH;y+=step){
+        for(let x=0;x<PW;x+=step){
+          const idx = y*PW+x;
+          const cnt = flowN[idx];
+          if(cnt < 1) continue;
+          const avx = flowDX[idx]/cnt, avy = flowDY[idx]/cnt;
+          const mag = Math.hypot(avx,avy);
+          if(mag < 0.15) continue;
+          const angle = Math.atan2(avy,avx);
+          const hue = ((angle+Math.PI)/(2*Math.PI))*360;
+          const cxp = x*sx, cyp = y*sy;
+          const len = Math.min(18, 6+mag*10);
+          octx.strokeStyle = `hsl(${hue},85%,60%)`;
+          octx.lineWidth = 2;
+          octx.beginPath();
+          octx.moveTo(cxp,cyp);
+          octx.lineTo(cxp+Math.cos(angle)*len, cyp+Math.sin(angle)*len);
+          octx.stroke();
+          octx.beginPath();
+          octx.arc(cxp+Math.cos(angle)*len, cyp+Math.sin(angle)*len, 2, 0, Math.PI*2);
+          octx.fillStyle = `hsl(${hue},85%,60%)`;
+          octx.fill();
+        }
+      }
+    }
+  }
+
+  video.addEventListener('loadedmetadata', sizeOverlay);
+})();
+</script>
+</body>
+</html>
