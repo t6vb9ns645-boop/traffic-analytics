@@ -61,15 +61,35 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
   grid-template-areas:"vid sidebar";
 }
 @media(max-width:700px){
-  body{height:auto;min-height:100vh;min-height:100dvh;overflow-y:auto;}
-  .app-header{flex-shrink:0;}
+  /* Compact header: the full stepper (icon + label + connector per step)
+     wraps to 2 lines on common phone widths and eats a large chunk of the
+     viewport height, squeezing the menu below to almost nothing. Drop the
+     text labels and shrink everything so it reliably stays one row. */
+  .app-header{flex-shrink:0;padding:8px 12px;gap:8px;flex-wrap:nowrap;}
+  .brand{font-size:11px;}
+  .step-lbl{display:none;}
+  .step-num{width:22px;height:22px;font-size:10px;}
+  .step-conn{width:10px;margin-bottom:0;}
+  .status-badge{display:none;}
+  /* Stack video above the menu, but keep the whole app pinned to the
+     viewport (no page-level scroll): the video gets a bounded share of
+     the height and the menu below it gets the rest as its own
+     independently scrollable region — same "always fully reachable via
+     internal scroll" behavior as desktop, just stacked instead of
+     side-by-side. */
   .app-body,.app-body.mode-live{
     grid-template-columns:1fr;
+    grid-template-rows:minmax(0,45vh) minmax(0,1fr);
     grid-template-areas:"vid" "content";
-    overflow:visible;min-height:0;
+    overflow:hidden;min-height:0;
   }
   .app-body.mode-live{grid-template-areas:"vid" "sidebar";}
-  .video-col,.content-col,.live-sidebar{overflow:visible;min-height:0;}
+  .video-col,.content-col,.live-sidebar{
+    overflow-y:auto;min-height:0;
+    /* reserve room so the fixed training/still-image FAB buttons never
+       permanently cover the last item in a scrolled-to-the-bottom menu */
+    padding-bottom:64px;
+  }
   .video-wrap{aspect-ratio:4/3;}
   footer{flex-shrink:0;}
 }
