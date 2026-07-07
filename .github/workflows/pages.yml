@@ -22,6 +22,14 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      # Rebuild the encrypted app from src/ on every deploy, so the published
+      # site always matches the current source — the committed public/index.html
+      # is only a fallback and no longer needs manual rebuilding. Requires the
+      # SITE_PASSWORD repository secret; build.js fails the run if it's missing.
+      - name: Build encrypted app
+        run: node build.js
+        env:
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
