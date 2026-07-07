@@ -2556,7 +2556,7 @@ CLASS_OPTIONS.forEach(c => {
   manualCaptureClassSelect.appendChild(o);
 });
 let captureMode=false, trainingExamples=[], exampleNextId=1;
-let learnedProfile=null; // {className: {avgWidthM, avgArea, n}} — derived numbers only, no images
+let learnedProfile=null; // {className: {avgWidthM, avgArea, n, stats:{widthM,logArea,tall}}} — derived numbers only, no images
 // Explicit, persistent switch for whether classify() actually consults the
 // learned profile — independent from whether new examples keep being
 // collected/refined in the background (autoLearnEnabled below). Without
@@ -2691,7 +2691,12 @@ function computeFeaturesAtNativePoint(nx,ny,cropW,cropH){
     const pL=applyH(calibration.H,nx-cropW/2,ny), pR=applyH(calibration.H,nx+cropW/2,ny);
     widthM=+Math.hypot(pR.x-pL.x,pR.y-pL.y).toFixed(2);
   }
-  return { areaPx:Math.round(cropW*cropH), wPx:Math.round(cropW), hPx:Math.round(cropH), aspect, widthM };
+  // areaPx is stored in the same 240×135 analysis space that track-based
+  // examples (t.area) use — one canonical unit for the learned profile,
+  // rather than native pixels that vary with the camera resolution.
+  const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
+  const pwArea=cropW*cropH/((vw/PW)*(vh/PH));
+  return { areaPx:Math.round(pwArea), wPx:Math.round(cropW), hPx:Math.round(cropH), aspect, widthM };
 }
 // nx,ny = crop center, cropW/H = crop size, all in the video's current
 // *native* pixel space — matches computeFeaturesAtNativePoint()'s inputs so
@@ -3086,26 +3091,57 @@ function renderExampleList(){
   saveLearningState();
 }
 
-// Shared centroid computation (mean real-world width when calibrated, mean
-// pixel area otherwise) over a list of {label, feat} samples — used both by
-// the manual "learn from examples" button and by continuous auto-learning.
+// Robust per-class statistics over a list of {label, feat} samples — used
+// both by the manual "learn from examples" button and by continuous
+// auto-learning. Median + MAD instead of a plain mean, so one wrongly
+// approved example can't permanently drag a class boundary, and each class
+// carries its own spread — a naturally wide class (LKW/Bus, ~1.9–2.6 m)
+// no longer acts as a distance "magnet" against a narrow neighbour (see
+// classifyWithProfile()).
+function median(xs){
+  const s=[...xs].sort((a,b)=>a-b), mid=s.length>>1;
+  return s.length%2 ? s[mid] : (s[mid-1]+s[mid])/2;
+}
+// {m: robust center, s: robust spread, n} — spread via 1.4826·MAD (≈ the
+// standard deviation for normal data, but insensitive to outliers), never
+// below minSigma so a class of near-identical samples doesn't collapse to
+// a zero-width band that rejects everything around it.
+function robustStat(xs, minSigma){
+  const vals=xs.filter(v=>v!=null&&isFinite(v));
+  if(!vals.length) return null;
+  const m=median(vals);
+  let s=1.4826*median(vals.map(x=>Math.abs(x-m)));
+  if(!isFinite(s)) s=0;
+  return {m, s:Math.max(s,minSigma), n:vals.length};
+}
 function computeProfileFromSamples(samples){
   const byClass={};
   for(const ex of samples){
+    const f=ex.feat||{};
     const key=ex.label;
-    if(!byClass[key]) byClass[key]={widthMs:[],areas:[],n:0};
-    if(ex.feat.widthM!=null) byClass[key].widthMs.push(ex.feat.widthM);
-    byClass[key].areas.push(ex.feat.areaPx);
+    if(!byClass[key]) byClass[key]={widthMs:[],areas:[],talls:[],n:0};
+    if(f.widthM!=null) byClass[key].widthMs.push(f.widthM);
+    if(f.areaPx>0) byClass[key].areas.push(f.areaPx);
+    // Tallness (height/width, orientation-preserving) — derived from the
+    // stored pixel box. The persisted `aspect` field is symmetric (max/min)
+    // and can't tell a tall person from an equally elongated wide car.
+    if(f.hPx>0&&f.wPx>0) byClass[key].talls.push(f.hPx/f.wPx);
     byClass[key].n++;
   }
   const profile={}; let usableClasses=0;
   for(const [cls,d] of Object.entries(byClass)){
     if(d.n<3) continue; // need a minimum sample size per class to trust it
     usableClasses++;
+    const widthM=robustStat(d.widthMs, 0.12);
+    if(widthM) widthM.s=Math.max(widthM.s, 0.08*widthM.m); // spread floor scales with size (an LKW varies by more meters than a bicycle)
+    const logArea=robustStat(d.areas.map(a=>Math.log(a)), 0.25); // log-space: pixel-area spread is multiplicative (distance/perspective)
+    const tall=robustStat(d.talls, 0.15);
     profile[cls]={
-      avgWidthM: d.widthMs.length ? d.widthMs.reduce((s,x)=>s+x,0)/d.widthMs.length : null,
-      avgArea: d.areas.reduce((s,x)=>s+x,0)/d.areas.length,
-      n: d.n
+      // avgWidthM/avgArea kept for export/display compatibility — now robust medians
+      avgWidthM: widthM ? +widthM.m.toFixed(2) : null,
+      avgArea: logArea ? Math.round(Math.exp(logArea.m)) : null,
+      n: d.n,
+      stats:{widthM, logArea, tall}
     };
   }
   return {profile, usableClasses};
@@ -3203,9 +3239,12 @@ function collectAutoLearnSample(t){
   if(!isFinite(wm) || wm<=0) return;
   if(CLASS_WIDTH_BOUNDARY_M.some(b=>Math.abs(wm-b)<CLASS_BOUNDARY_MARGIN_M)) return; // too ambiguous, skip
   const label=staticClassifyByWidth(t.h>t.w*1.5, wm);
+  // Full feature set (incl. wPx/hPx for the tallness signal), not just
+  // width+area — computeFeatures() measures widthM identically to wm above.
+  const feat=computeFeatures(t);
+  feat.cropNativeW=Math.round(crop.cw); feat.cropNativeH=Math.round(crop.ch);
   const ex={
-    id:exampleNextId++, label,
-    feat:{widthM:+wm.toFixed(2), areaPx:Math.round(t.area||0), cropNativeW:Math.round(crop.cw), cropNativeH:Math.round(crop.ch)},
+    id:exampleNextId++, label, feat,
     capturedAt:new Date().toISOString(), _preview:capturePreview(t)
   };
   pendingAutoSamples.push(ex);
@@ -3409,9 +3448,14 @@ function applyReviewMark(wCss, hCss){
   const thumbW=wCss*(natW/reviewMarkCanvas.width), thumbH=hCss*(natH/reviewMarkCanvas.height);
   const cropNativeW=item.feat?.cropNativeW||natW, cropNativeH=item.feat?.cropNativeH||natH;
   const newWpx=Math.round(thumbW*(cropNativeW/natW)), newHpx=Math.round(thumbH*(cropNativeH/natH));
-  const oldWpx=item.feat?.wPx, oldWidthM=item.feat?.widthM;
+  const oldWpx=item.feat?.wPx, oldHpx=item.feat?.hPx, oldWidthM=item.feat?.widthM;
   const aspect=+((newHpx>=newWpx?newHpx/newWpx:newWpx/newHpx).toFixed(2));
-  const newFeat={ ...item.feat, wPx:newWpx, hPx:newHpx, aspect, areaPx:newWpx*newHpx };
+  const newFeat={ ...item.feat, wPx:newWpx, hPx:newHpx, aspect };
+  // Rescale the area proportionally to the redrawn box instead of replacing
+  // it with a native-pixel product — keeps whatever unit space the example
+  // was captured in (track examples use the 240×135 analysis space).
+  if(item.feat?.areaPx>0 && oldWpx>0 && oldHpx>0) newFeat.areaPx=Math.round(item.feat.areaPx*(newWpx*newHpx)/(oldWpx*oldHpx));
+  else newFeat.areaPx=newWpx*newHpx;
   // The meters-per-native-pixel scale at that image location is still
   // valid — only the object's own pixel extent was possibly mismeasured —
   // so the real-world width estimate is corrected proportionally rather
@@ -3709,7 +3753,9 @@ function pushStillDetectionAsExample(det){
     const pL=applyH(calibration.H,xL,yBase), pR=applyH(calibration.H,xR,yBase);
     widthM=+Math.hypot(pR.x-pL.x,pR.y-pL.y).toFixed(2);
   }
-  const feat={areaPx:Math.round(w*h), wPx:Math.round(w), hPx:Math.round(h), aspect:+(Math.max(w,h)/Math.max(1,Math.min(w,h))).toFixed(2), widthM};
+  // areaPx converted into the 240×135 analysis space (like track-based
+  // examples) so all learned-profile areas share one canonical unit.
+  const feat={areaPx:Math.round(w*h/((stillBase.width/PW)*(stillBase.height/PH))), wPx:Math.round(w), hPx:Math.round(h), aspect:+(Math.max(w,h)/Math.max(1,Math.min(w,h))).toFixed(2), widthM};
   const pad=1.3, cw=Math.min(stillBase.width,w*pad), ch=Math.min(stillBase.height,h*pad);
   const cx=x+w/2, cy=y+h/2;
   const sxp=Math.max(0,Math.min(stillBase.width-cw,cx-cw/2));
@@ -4242,35 +4288,64 @@ function classify(blob){
   const {area,h,w}=blob;
   const minA=parseInt(minAreaSlider.value,10);
   const tall=h>w*1.5;
-  if(calibration){
-    const wm=measureCalibratedWidthM(blob);
-    if(useLearnedProfile && learnedProfile){
-      const cls=nearestLearnedClass(learnedProfile, c => c.avgWidthM, wm);
-      if(cls) return cls;
-    }
-    return staticClassifyByWidth(tall, wm);
-  }
+  const wm=calibration?measureCalibratedWidthM(blob):null;
   if(useLearnedProfile && learnedProfile){
-    const cls=nearestLearnedClass(learnedProfile, c => c.avgArea, area);
+    const cls=classifyWithProfile({
+      widthM: (wm!=null&&isFinite(wm)&&wm>0)?wm:null,
+      tall: (w>0&&h>0)?h/w:null,
+      logArea: area>0?Math.log(area):null
+    });
     if(cls) return cls;
   }
+  if(calibration) return staticClassifyByWidth(tall, wm);
   if(tall&&area<minA*10) return 'Person';
   if(area<minA*2.2) return 'Motorrad/Fahrrad';
   if(area<minA*9) return 'PKW';
   return 'LKW/Bus';
 }
 
-// Nearest-centroid lookup against the learned per-class profile — picks the
-// class whose recorded average (real width, or pixel area if uncalibrated)
-// is closest to the current measurement. Skips classes without that metric.
-function nearestLearnedClass(profile, metricFn, value){
+// Multi-feature lookup against the learned per-class profile. Each feature
+// is compared as a z-score against that class's own robust spread, so being
+// "0.3 m off" counts for a lot against a tight class and for little against
+// a broad one. Calibrated real-world width dominates when available, box
+// tallness separates people from vehicles regardless of calibration, and
+// pixel area carries the load when uncalibrated. Returns null — caller
+// falls back to the static heuristic — when the measurement isn't credibly
+// close to *any* learned class, instead of blindly assigning the nearest.
+const PROFILE_REJECT_Z=2.5;
+function classifyWithProfile(meas){
+  const W_WIDTH=1.0, W_TALL=0.5, W_AREA=calibration?0.3:1.0;
   let bestCls=null, bestD=Infinity;
-  for(const [cls,p] of Object.entries(profile)){
-    const m=metricFn(p);
-    if(m==null) continue;
-    const d=Math.abs(value-m);
+  for(const [cls,p] of Object.entries(learnedProfile)){
+    const st=p.stats;
+    if(!st) continue; // profile persisted by an older version — upgraded on load/next recompute
+    let d2=0, wsum=0;
+    if(meas.widthM!=null && st.widthM){ const z=(meas.widthM-st.widthM.m)/st.widthM.s; d2+=W_WIDTH*z*z; wsum+=W_WIDTH; }
+    if(meas.tall!=null && st.tall){ const z=(meas.tall-st.tall.m)/st.tall.s; d2+=W_TALL*z*z; wsum+=W_TALL; }
+    if(meas.logArea!=null && st.logArea){ const z=(meas.logArea-st.logArea.m)/st.logArea.s; d2+=W_AREA*z*z; wsum+=W_AREA; }
+    if(!wsum) continue;
+    const d=Math.sqrt(d2/wsum);
     if(d<bestD){bestD=d;bestCls=cls;}
   }
+  return bestD<=PROFILE_REJECT_Z ? bestCls : null;
+}
+
+// Per-track temporal smoothing of the per-frame classification: single-frame
+// measurements jitter (partial occlusion, merged blobs, shadow edges), which
+// used to flip a track's class back and forth between frames — whichever
+// frame happened to be last determined the counted class. Each frame casts
+// a decaying vote for the instantaneous class; the track keeps its current
+// class until another has clearly out-voted it, so the class reflects the
+// whole observed trajectory.
+const CLS_VOTE_DECAY=0.9, CLS_SWITCH_FACTOR=1.3;
+function stableTrackClass(t, instCls){
+  const votes=t.clsVotes||(t.clsVotes={});
+  for(const k in votes) votes[k]*=CLS_VOTE_DECAY;
+  votes[instCls]=(votes[instCls]||0)+1;
+  let bestCls=instCls, bestV=-Infinity;
+  for(const [k,v] of Object.entries(votes)) if(v>bestV){bestV=v;bestCls=k;}
+  const cur=t.cls;
+  if(cur && bestCls!==cur && bestV<(votes[cur]||0)*CLS_SWITCH_FACTOR) return cur;
   return bestCls;
 }
 
@@ -4488,7 +4563,7 @@ function updateTracks(blobs){
       // A real-time manual classification (set via manual capture-by-click)
       // overrides the heuristic/learned classifier for this track's
       // remaining lifetime, instead of being silently reclassified next frame.
-      t.cls=t.manualCls||classify(b);
+      t.cls=t.manualCls||stableTrackClass(t, classify(b));
       const sf=0.3;
       t.dispX=(t.dispX===undefined)?t.x:t.dispX+(t.x-t.dispX)*sf;
       t.dispY=(t.dispY===undefined)?t.y:t.dispY+(t.y-t.dispY)*sf;
@@ -4548,11 +4623,12 @@ function updateTracks(blobs){
   for(const i of unmatched){
     const b=blobs[i];
     if(tracks.some(t=>Math.hypot(b.cx-t.x,b.cy-t.y)<Math.max(14,Math.sqrt(t.area||16)*0.9))) continue;
+    const cls0=classify(b);
     tracks.push({
       id:'V-'+String(nextId++).padStart(4,'0'),
       x:b.cx,y:b.cy,dx:0,dy:0,area:b.area,w:b.w,h:b.h,
       dispX:b.cx,dispY:b.cy,dispW:b.w,dispH:b.h,
-      cls:classify(b),missed:0,streak:1,confirmed:false,
+      cls:cls0,clsVotes:{[cls0]:1},missed:0,streak:1,confirmed:false,
       // A track that first appears inside a marked entry zone (a spot where
       // new objects are expected, e.g. a side street entering the frame) is
       // confirmed after fewer frames, since it's much less likely to be a
@@ -5127,6 +5203,14 @@ refreshStepper();
 if(loadLearningState()){
   renderExampleList();
   renderPendingList();
+  // A profile persisted by an older version only carries per-class means —
+  // rebuild it from the stored samples so the robust multi-feature form
+  // (median/MAD + tallness) is active immediately, not only after the next
+  // capture or approval.
+  if(learnedProfile && Object.values(learnedProfile).some(p=>!p.stats)
+     && (trainingExamples.length||autoLearnPool.length)){
+    recomputeLearnedProfile();
+  }
   if(learnedProfile){
     btnResetLearning.disabled=false;
     const usableClasses=Object.keys(learnedProfile).length;
