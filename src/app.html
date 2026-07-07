@@ -940,6 +940,13 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
         <div class="diag-msg" id="useLearnedProfileStatus">Das gelernte Profil wird bei jeder Klassifizierung bevorzugt genutzt. Deaktivieren, um es bewusst auszublenden — die Beispiele bleiben erhalten.</div>
       </div>
       <div class="step-section">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+          <input type="checkbox" id="aiSecondOpinionToggle" style="accent-color:var(--accent);">
+          🤖 KI-Zweitmeinung bei unsicheren Objekten
+        </label>
+        <div class="diag-msg" id="aiSecondOpinionStatus">Prüft unsicher klassifizierte Objekte stichprobenartig mit dem vortrainierten Erkennungsmodell (COCO-SSD) nach — einmaliger Modell-Download beim Aktivieren (Internetzugriff nötig), danach läuft alles lokal im Browser, es wird nichts hochgeladen.</div>
+      </div>
+      <div class="step-section">
         <div class="row" style="align-items:center;">
           <label class="diag-msg" for="pendingCapInput" style="flex:1;">Max. Objekte zur Sichtprüfung ausstehend (5–100)</label>
           <input type="number" id="pendingCapInput" min="5" max="100" step="1" value="20" style="width:80px;">
@@ -948,7 +955,7 @@ footer{text-align:center;padding:8px;color:var(--dim);font-size:9.5px;
       </div>
     </div>
 
-    <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, ggf. reale Breite bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert, exportiert oder in eine Cloud übertragen</b> (keine Gesichter, keine Kennzeichen — die App hat ohnehin keine Serveranbindung). Die Bild-Vorschauen dienen nur der Kontrolle in dieser Sitzung und verschwinden beim Neuladen. Das <b>Zahlen-Profil selbst bleibt erhalten</b> (localStorage). <b>Falsch erkannte „Objekte" (die es gar nicht gibt) als „Störung"/„Sonstiges" labeln</b> — auch das fließt in die Berechnung ein und hilft, ähnliche Fehlerkennungen künftig zu vermeiden.</div>
+    <div class="note">Beim Erfassen wird nur ein kleines <b>Zahlen-Profil</b> des Objekts abgelegt (Größe, Form, Position im Bild, ggf. reale Breite und Höchstgeschwindigkeit bei Kalibrierung) — <b>es wird kein Bild dauerhaft gespeichert, exportiert oder in eine Cloud übertragen</b> (keine Gesichter, keine Kennzeichen — die App hat ohnehin keine Serveranbindung). Die Bild-Vorschauen dienen nur der Kontrolle in dieser Sitzung und verschwinden beim Neuladen. Das <b>Zahlen-Profil selbst bleibt erhalten</b> (localStorage). <b>Falsch erkannte „Objekte" (die es gar nicht gibt) als „Störung"/„Sonstiges" labeln</b> — auch das fließt in die Berechnung ein und hilft, ähnliche Fehlerkennungen künftig zu vermeiden.</div>
 
     <div class="row">
       <button id="btnLearnFromExamples" style="flex:1;">🧠 Jetzt neu berechnen</button>
@@ -1267,6 +1274,8 @@ const pendingCapInput          = document.getElementById('pendingCapInput');
 const pendingCapInputSettings  = document.getElementById('pendingCapInputSettings');
 const autoLearnStatus      = document.getElementById('autoLearnStatus');
 const useLearnedProfileToggle = document.getElementById('useLearnedProfileToggle');
+const aiSecondOpinionToggle = document.getElementById('aiSecondOpinionToggle');
+const aiSecondOpinionStatus = document.getElementById('aiSecondOpinionStatus');
 const useLearnedProfileStatus = document.getElementById('useLearnedProfileStatus');
 
 const btnSpeedChartDrawer = document.getElementById('btnSpeedChartDrawer');
@@ -2592,7 +2601,8 @@ function saveLearningState(){
       pendingAutoSamples: pendingAutoSamples.map(({id,label,feat,capturedAt,source,trackId,manuallyMarked})=>({id,label,feat,capturedAt,source,trackId,manuallyMarked})),
       autoLearnRounds,
       exampleNextId,
-      pendingCap: PENDING_CAP
+      pendingCap: PENDING_CAP,
+      aiSecondOpinion
     };
     localStorage.setItem(LEARNING_STORAGE_KEY, JSON.stringify(payload));
   }catch(e){ /* storage unavailable/full — learning simply won't persist this time, not fatal */ }
@@ -2614,6 +2624,18 @@ function loadLearningState(){
     if(typeof data.autoLearnRounds==='number') autoLearnRounds=data.autoLearnRounds;
     if(typeof data.exampleNextId==='number') exampleNextId=data.exampleNextId;
     if(typeof data.pendingCap==='number') setPendingCap(data.pendingCap);
+    if(typeof data.aiSecondOpinion==='boolean'){
+      aiSecondOpinion=data.aiSecondOpinion;
+      aiSecondOpinionToggle.checked=aiSecondOpinion;
+      if(aiSecondOpinion){
+        // Fetch the model in the background so the second opinion is ready
+        // once the analysis runs; on failure fall back to "off" visibly.
+        ensureCocoModel().then(updateAiOpinionStatus).catch(()=>{
+          aiSecondOpinion=false; aiSecondOpinionToggle.checked=false;
+          aiSecondOpinionStatus.textContent='Modell konnte nicht geladen werden (kein Internetzugriff?) — Zweitmeinung bleibt aus.';
+        });
+      }
+    }
     return true;
   }catch(e){ return false; } // corrupted/incompatible data from an older version — ignore, start fresh
 }
@@ -2696,7 +2718,8 @@ function computeFeaturesAtNativePoint(nx,ny,cropW,cropH){
   // rather than native pixels that vary with the camera resolution.
   const vw=video.videoWidth||PW, vh=video.videoHeight||PH;
   const pwArea=cropW*cropH/((vw/PW)*(vh/PH));
-  return { areaPx:Math.round(pwArea), wPx:Math.round(cropW), hPx:Math.round(cropH), aspect, widthM };
+  const yFrac=+Math.max(0,Math.min(1,(ny+cropH/2)/vh)).toFixed(3);
+  return { areaPx:Math.round(pwArea), wPx:Math.round(cropW), hPx:Math.round(cropH), aspect, widthM, maxKmh:null, yFrac };
 }
 // nx,ny = crop center, cropW/H = crop size, all in the video's current
 // *native* pixel space — matches computeFeaturesAtNativePoint()'s inputs so
@@ -2947,7 +2970,14 @@ function computeFeatures(t){
     const pL=applyH(calibration.H,xL*sX,yBase*sY), pR=applyH(calibration.H,xR*sX,yBase*sY);
     widthM=+Math.hypot(pR.x-pL.x,pR.y-pL.y).toFixed(2);
   }
-  return { areaPx:Math.round(t.area||0), wPx:Math.round(wPx), hPx:Math.round(hPx), aspect, widthM };
+  // maxKmh: fastest speed observed so far on this trajectory — far more
+  // class-discriminative than the current instant (a car stuck in traffic
+  // is momentarily as slow as a pedestrian, but its top speed isn't).
+  const maxKmh=(calibration && t.maxSpeedKmh>0.5) ? +t.maxSpeedKmh.toFixed(1) : null;
+  // yFrac: vertical position of the object's base in the frame (0=top,
+  // 1=bottom) — lets the profile normalize pixel area for perspective.
+  const yFrac=+Math.max(0,Math.min(1,(t.y+(t.h||0)/2)/PH)).toFixed(3);
+  return { areaPx:Math.round(t.area||0), wPx:Math.round(wPx), hPx:Math.round(hPx), aspect, widthM, maxKmh, yFrac };
 }
 
 // Shared by capturePreview() and the auto-learn minimum-size gate: the
@@ -3114,18 +3144,35 @@ function robustStat(xs, minSigma){
   if(!isFinite(s)) s=0;
   return {m, s:Math.max(s,minSigma), n:vals.length};
 }
+// Perspective scale for pixel area at a given vertical frame position
+// (0=top, 1=bottom): an object's on-screen size shrinks roughly linearly
+// toward the horizon line, so its pixel area shrinks with the square of
+// this factor. Normalizing by it makes areas from near and far objects
+// comparable *without* a full calibration — the horizon slider (already
+// maintained for road detection) provides the vanishing-line estimate.
+// Anchored so the factor is 1 at the bottom edge: samples from older
+// versions without a stored yFrac stay usable (treated as "near").
+function depthAreaFactor(yFrac){
+  const h=parseInt(horizonSlider.value,10)/100;
+  return Math.max(0.05, Math.min(1.5, (yFrac-h)/(1-h)));
+}
+function normalizedLogArea(areaPx, yFrac){
+  const f=depthAreaFactor(yFrac!=null?yFrac:1);
+  return Math.log(areaPx/(f*f));
+}
 function computeProfileFromSamples(samples){
   const byClass={};
   for(const ex of samples){
     const f=ex.feat||{};
     const key=ex.label;
-    if(!byClass[key]) byClass[key]={widthMs:[],areas:[],talls:[],n:0};
+    if(!byClass[key]) byClass[key]={widthMs:[],areas:[],talls:[],kmhs:[],n:0};
     if(f.widthM!=null) byClass[key].widthMs.push(f.widthM);
-    if(f.areaPx>0) byClass[key].areas.push(f.areaPx);
+    if(f.areaPx>0) byClass[key].areas.push(normalizedLogArea(f.areaPx, f.yFrac));
     // Tallness (height/width, orientation-preserving) — derived from the
     // stored pixel box. The persisted `aspect` field is symmetric (max/min)
     // and can't tell a tall person from an equally elongated wide car.
     if(f.hPx>0&&f.wPx>0) byClass[key].talls.push(f.hPx/f.wPx);
+    if(f.maxKmh>0) byClass[key].kmhs.push(f.maxKmh);
     byClass[key].n++;
   }
   const profile={}; let usableClasses=0;
@@ -3134,14 +3181,16 @@ function computeProfileFromSamples(samples){
     usableClasses++;
     const widthM=robustStat(d.widthMs, 0.12);
     if(widthM) widthM.s=Math.max(widthM.s, 0.08*widthM.m); // spread floor scales with size (an LKW varies by more meters than a bicycle)
-    const logArea=robustStat(d.areas.map(a=>Math.log(a)), 0.25); // log-space: pixel-area spread is multiplicative (distance/perspective)
+    const logArea=robustStat(d.areas, 0.25); // already log+depth-normalized: pixel-area spread is multiplicative
     const tall=robustStat(d.talls, 0.15);
+    const kmh=robustStat(d.kmhs, 2.5);
+    if(kmh) kmh.s=Math.max(kmh.s, 0.2*kmh.m); // traffic speeds vary a lot day to day — keep the band generous
     profile[cls]={
       // avgWidthM/avgArea kept for export/display compatibility — now robust medians
       avgWidthM: widthM ? +widthM.m.toFixed(2) : null,
       avgArea: logArea ? Math.round(Math.exp(logArea.m)) : null,
       n: d.n,
-      stats:{widthM, logArea, tall}
+      stats:{widthM, logArea, tall, kmh}
     };
   }
   return {profile, usableClasses};
@@ -3755,7 +3804,8 @@ function pushStillDetectionAsExample(det){
   }
   // areaPx converted into the 240×135 analysis space (like track-based
   // examples) so all learned-profile areas share one canonical unit.
-  const feat={areaPx:Math.round(w*h/((stillBase.width/PW)*(stillBase.height/PH))), wPx:Math.round(w), hPx:Math.round(h), aspect:+(Math.max(w,h)/Math.max(1,Math.min(w,h))).toFixed(2), widthM};
+  const feat={areaPx:Math.round(w*h/((stillBase.width/PW)*(stillBase.height/PH))), wPx:Math.round(w), hPx:Math.round(h), aspect:+(Math.max(w,h)/Math.max(1,Math.min(w,h))).toFixed(2), widthM,
+    maxKmh:null, yFrac:+Math.max(0,Math.min(1,(y+h)/stillBase.height)).toFixed(3)};
   const pad=1.3, cw=Math.min(stillBase.width,w*pad), ch=Math.min(stillBase.height,h*pad);
   const cx=x+w/2, cy=y+h/2;
   const sxp=Math.max(0,Math.min(stillBase.width-cw,cx-cw/2));
@@ -3907,6 +3957,11 @@ function lineXatY(line,y){
 let laneSuggestion=null;
 
 horizonSlider.addEventListener('input', () => horizonVal.textContent=horizonSlider.value+'%');
+// The learned profile's depth-normalized pixel areas are anchored to the
+// horizon line — rebuild the profile once the user settles on a new value.
+horizonSlider.addEventListener('change', () => {
+  if(trainingExamples.length||autoLearnPool.length) recomputeLearnedProfile();
+});
 
 // Shared core: detects the road trapezoid in the current frame (Sobel/marking
 // edges + Hough lines, restricted to the ROI polygon or horizon fallback) and
@@ -4284,16 +4339,24 @@ function staticClassifyByWidth(tall, wm){
   return 'LKW/Bus';
 }
 
-function classify(blob){
+// `track` is optional (a brand-new blob has none yet) — it contributes the
+// trajectory's top speed, which a single frame can't know.
+function classify(blob, track){
   const {area,h,w}=blob;
   const minA=parseInt(minAreaSlider.value,10);
   const tall=h>w*1.5;
   const wm=calibration?measureCalibratedWidthM(blob):null;
   if(useLearnedProfile && learnedProfile){
+    // Top speed only once the trajectory is established — a freshly appeared
+    // track's maximum is still near zero and would drag everything toward
+    // the slowest class.
+    const kmh=(calibration && track && track.maxSpeedKmh>0.5 && (track.streak||0)>=8) ? track.maxSpeedKmh : null;
+    const yFrac=Math.max(0,Math.min(1,(blob.cy+(h||0)/2)/PH));
     const cls=classifyWithProfile({
       widthM: (wm!=null&&isFinite(wm)&&wm>0)?wm:null,
       tall: (w>0&&h>0)?h/w:null,
-      logArea: area>0?Math.log(area):null
+      logArea: area>0?normalizedLogArea(area,yFrac):null,
+      maxKmh: kmh
     });
     if(cls) return cls;
   }
@@ -4314,7 +4377,7 @@ function classify(blob){
 // close to *any* learned class, instead of blindly assigning the nearest.
 const PROFILE_REJECT_Z=2.5;
 function classifyWithProfile(meas){
-  const W_WIDTH=1.0, W_TALL=0.5, W_AREA=calibration?0.3:1.0;
+  const W_WIDTH=1.0, W_TALL=0.5, W_AREA=calibration?0.3:1.0, W_SPEED=0.4;
   let bestCls=null, bestD=Infinity;
   for(const [cls,p] of Object.entries(learnedProfile)){
     const st=p.stats;
@@ -4323,6 +4386,7 @@ function classifyWithProfile(meas){
     if(meas.widthM!=null && st.widthM){ const z=(meas.widthM-st.widthM.m)/st.widthM.s; d2+=W_WIDTH*z*z; wsum+=W_WIDTH; }
     if(meas.tall!=null && st.tall){ const z=(meas.tall-st.tall.m)/st.tall.s; d2+=W_TALL*z*z; wsum+=W_TALL; }
     if(meas.logArea!=null && st.logArea){ const z=(meas.logArea-st.logArea.m)/st.logArea.s; d2+=W_AREA*z*z; wsum+=W_AREA; }
+    if(meas.maxKmh!=null && st.kmh){ const z=(meas.maxKmh-st.kmh.m)/st.kmh.s; d2+=W_SPEED*z*z; wsum+=W_SPEED; }
     if(!wsum) continue;
     const d=Math.sqrt(d2/wsum);
     if(d<bestD){bestD=d;bestCls=cls;}
@@ -4348,6 +4412,86 @@ function stableTrackClass(t, instCls){
   if(cur && bestCls!==cur && bestV<(votes[cur]||0)*CLS_SWITCH_FACTOR) return cur;
   return bestCls;
 }
+
+/* ══════════════════════════════════════════
+   AI second opinion (opt-in): when the size/shape/speed classification of a
+   live track keeps wavering, run the pretrained COCO-SSD model (the same
+   one the Bild-/Video-Erkennung drawer lazy-loads) once or twice on a crop
+   around that object and feed its verdict into the track's class votes —
+   a strong vote, not an override, so the temporal smoothing still decides.
+   Strictly sampled: at most one inference at a time, rate-limited, only for
+   confirmed non-artifact tracks whose votes are genuinely split, and at
+   most twice per track — the model is far too slow to run on every frame.
+══════════════════════════════════════════ */
+const AI_OPINION_MIN_INTERVAL_MS=1500, AI_OPINION_MAX_PER_TRACK=2, AI_OPINION_VOTE=4, AI_OPINION_MIN_SCORE=0.5;
+let aiSecondOpinion=false, aiOpinionBusy=false, lastAiOpinionAt=0, aiOpinionChecked=0, aiOpinionApplied=0;
+// "Uncertain" = the leading class holds less than 65% of the (decayed) vote
+// mass once a few frames have accumulated — exactly the tracks whose class
+// keeps being contested between frames.
+function trackClassUncertain(t){
+  if(t.manualCls||!t.clsVotes) return false;
+  let sum=0, best=0;
+  for(const k in t.clsVotes){ const v=t.clsVotes[k]; sum+=v; if(v>best) best=v; }
+  return sum>=3 && best/sum<0.65;
+}
+async function maybeAiSecondOpinion(t){
+  if(!aiSecondOpinion||!cocoModel||aiOpinionBusy) return;
+  if(!t.confirmed||t.isArtifact||t.manualCls) return;
+  if((t.aiOpinions||0)>=AI_OPINION_MAX_PER_TRACK) return;
+  const now=performance.now();
+  if(now-lastAiOpinionAt<AI_OPINION_MIN_INTERVAL_MS) return;
+  if(!trackClassUncertain(t)) return;
+  const crop=estimateCropPixelSize(t);
+  if(!crop||crop.cw<48||crop.ch<48) return; // too small for the model to say anything useful
+  aiOpinionBusy=true; lastAiOpinionAt=now; t.aiOpinions=(t.aiOpinions||0)+1;
+  try{
+    // Snapshot the crop synchronously (the track keeps moving), downscaled —
+    // COCO-SSD gains nothing from more than ~320px here and stays fast.
+    const scale=Math.min(1, 320/Math.max(crop.cw,crop.ch));
+    const c=document.createElement('canvas');
+    c.width=Math.max(1,Math.round(crop.cw*scale)); c.height=Math.max(1,Math.round(crop.ch*scale));
+    c.getContext('2d').drawImage(video,crop.sxp,crop.syp,crop.cw,crop.ch,0,0,c.width,c.height);
+    const preds=await cocoModel.detect(c);
+    aiOpinionChecked++;
+    // Best mapped prediction whose box covers the crop center — that's the
+    // tracked object itself, not something else in the padded surroundings.
+    let best=null;
+    for(const p of preds){
+      const cls=COCO_CLASS_MAP[p.class];
+      if(!cls||p.score<AI_OPINION_MIN_SCORE) continue;
+      const [x,y,w,h]=p.bbox;
+      if(x>c.width/2||x+w<c.width/2||y>c.height/2||y+h<c.height/2) continue;
+      if(!best||p.score>best.score) best={cls,score:p.score};
+    }
+    if(best && !t.manualCls){
+      const votes=t.clsVotes||(t.clsVotes={});
+      votes[best.cls]=(votes[best.cls]||0)+AI_OPINION_VOTE;
+      aiOpinionApplied++;
+    }
+    updateAiOpinionStatus();
+  }catch(e){ /* model hiccup or tainted frame (CORS) — skip; the size/shape classifier stands */ }
+  finally{ aiOpinionBusy=false; }
+}
+function updateAiOpinionStatus(){
+  aiSecondOpinionStatus.textContent = aiSecondOpinion
+    ? `Aktiv: unsicher klassifizierte Objekte werden stichprobenartig nachgeprüft — bisher ${aiOpinionChecked} Prüfung(en), ${aiOpinionApplied} übernommene Zweitmeinung(en) in dieser Sitzung. Läuft komplett lokal im Browser.`
+    : 'Prüft unsicher klassifizierte Objekte stichprobenartig mit dem vortrainierten Erkennungsmodell (COCO-SSD) nach — einmaliger Modell-Download beim Aktivieren (Internetzugriff nötig), danach läuft alles lokal im Browser, es wird nichts hochgeladen.';
+}
+aiSecondOpinionToggle.addEventListener('change', async () => {
+  aiSecondOpinion=aiSecondOpinionToggle.checked;
+  saveLearningState();
+  if(aiSecondOpinion && !cocoModel){
+    aiSecondOpinionStatus.textContent='Lade Erkennungsmodell (einmalig, benötigt Internetzugriff) …';
+    try{ await ensureCocoModel(); }
+    catch(e){
+      aiSecondOpinion=false; aiSecondOpinionToggle.checked=false;
+      aiSecondOpinionStatus.textContent='Modell konnte nicht geladen werden (kein Internetzugriff?) — Zweitmeinung bleibt aus.';
+      saveLearningState();
+      return;
+    }
+  }
+  updateAiOpinionStatus();
+});
 
 function looksLikeGlassArtifact(t){
   if(!filterArtifactsEl.checked) return false;
@@ -4563,7 +4707,8 @@ function updateTracks(blobs){
       // A real-time manual classification (set via manual capture-by-click)
       // overrides the heuristic/learned classifier for this track's
       // remaining lifetime, instead of being silently reclassified next frame.
-      t.cls=t.manualCls||stableTrackClass(t, classify(b));
+      t.cls=t.manualCls||stableTrackClass(t, classify(b, t));
+      maybeAiSecondOpinion(t);
       const sf=0.3;
       t.dispX=(t.dispX===undefined)?t.x:t.dispX+(t.x-t.dispX)*sf;
       t.dispY=(t.dispY===undefined)?t.y:t.dispY+(t.y-t.dispY)*sf;
@@ -5203,12 +5348,11 @@ refreshStepper();
 if(loadLearningState()){
   renderExampleList();
   renderPendingList();
-  // A profile persisted by an older version only carries per-class means —
-  // rebuild it from the stored samples so the robust multi-feature form
-  // (median/MAD + tallness) is active immediately, not only after the next
-  // capture or approval.
-  if(learnedProfile && Object.values(learnedProfile).some(p=>!p.stats)
-     && (trainingExamples.length||autoLearnPool.length)){
+  // Always rebuild the profile from the stored samples on load: a profile
+  // persisted by an older version may only carry per-class means (or lack
+  // the newer speed/depth-normalized statistics), and the depth
+  // normalization must reflect the *current* horizon setting.
+  if(learnedProfile && (trainingExamples.length||autoLearnPool.length)){
     recomputeLearnedProfile();
   }
   if(learnedProfile){
